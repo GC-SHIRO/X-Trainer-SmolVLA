@@ -60,19 +60,8 @@ bash scripts/xtrainer/train_smolvla.sh \
   --output-dir outputs/train/xtrainer_smolvla_full
 ```
 
-Windows PowerShell：
-
-```powershell
-.\scripts\xtrainer\train_smolvla.ps1 `
-  -DatasetRoot D:\data\xtrainer\my_xtrainer_dataset `
-  -Device cuda `
-  -BatchSize 8 `
-  -Steps 100000 `
-  -OutputDir outputs\train\xtrainer_smolvla_full
-```
-
-Shell 启动脚本使用 `--help` 查看帮助，PowerShell 使用 `-Help`。二者都会拒绝缺失或不存在的数据集目录。
-只有在数据集已校验且明确需要跳过只读预检时，才使用 `--skip-validation` / `-SkipValidation`。
+使用 `--help` 查看启动脚本帮助。脚本会拒绝缺失或不存在的数据集目录；只有在数据集已校验且明确需要
+跳过只读预检时，才使用 `--skip-validation`。
 
 若要执行最小 smoke run，请使用有效的小型数据集并降低 batch size 与 steps：
 

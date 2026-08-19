@@ -1,7 +1,6 @@
 """Contract tests for the X-trainer SmolVLA training launchers."""
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -13,7 +12,6 @@ from lerobot.configs.train import TrainPipelineConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASH_LAUNCHER = REPO_ROOT / "scripts" / "xtrainer" / "train_smolvla.sh"
-POWERSHELL_LAUNCHER = REPO_ROOT / "scripts" / "xtrainer" / "train_smolvla.ps1"
 TRAIN_CONFIG = REPO_ROOT / "configs" / "xtrainer" / "train_smolvla.yaml"
 
 
@@ -142,18 +140,3 @@ def test_bash_launcher_uses_checkpoint_config_when_resuming(tmp_path):
         "--config_path=outputs/run/checkpoints/last/pretrained_model",
         f"--dataset.root={dataset_root}",
     ]
-
-
-def test_powershell_launcher_help_when_powershell_is_available():
-    powershell = shutil.which("pwsh") or shutil.which("powershell")
-    if powershell is None:
-        pytest.skip("PowerShell is not installed")
-
-    result = subprocess.run(
-        [powershell, "-NoProfile", "-File", str(POWERSHELL_LAUNCHER), "--help"],
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "-DatasetRoot PATH" in result.stdout

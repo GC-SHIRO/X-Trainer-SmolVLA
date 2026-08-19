@@ -236,8 +236,7 @@ feat(xtrainer): 添加 v2.1 数据校验命令
 
 ```text
 scripts/xtrainer/train_smolvla.sh
-scripts/xtrainer/train_smolvla.ps1
-docs/source/xtrainer_smolvla.mdx
+docs/XTRAINER_SMOLVLA.md
 ```
 
 ### 实施内容
@@ -245,13 +244,12 @@ docs/source/xtrainer_smolvla.mdx
 - 默认在训练前运行 v2.1 数据校验，可显式跳过。
 - 使用 `configs/xtrainer/train_smolvla.yaml` 调用 `lerobot-train`。
 - 支持覆盖 dataset root、输出目录、device、batch size、steps 和 resume checkpoint。
-- Linux shell 与 Windows PowerShell 脚本保持参数语义一致。
 - 文档说明 v2.1 目录结构和必需字段。
 - 优先提供单 GPU 用法，仅暴露仓库已经支持的分布式参数。
 
 ### 验收标准
 
-- 两个启动脚本均提供帮助信息，并拒绝不存在的数据目录。
+- Shell 启动脚本提供帮助信息，并拒绝不存在的数据目录。
 - 最小训练 smoke test 能完成 forward、backward 和 checkpoint 保存。
 - 不引入自定义训练循环。
 
@@ -272,9 +270,8 @@ feat(xtrainer): 添加 SmolVLA 全量训练入口
 ```text
 configs/xtrainer/train_smolvla_lora.yaml
 scripts/xtrainer/train_smolvla_lora.sh
-scripts/xtrainer/train_smolvla_lora.ps1
 tests/xtrainer/test_smolvla_lora_config.py
-docs/source/xtrainer_smolvla.mdx
+docs/XTRAINER_SMOLVLA.md
 ```
 
 ### 实施内容
@@ -566,8 +563,7 @@ test(xtrainer): 添加 Mock Policy 部署测试
 ### 计划文件
 
 ```text
-docs/source/xtrainer_smolvla.mdx
-docs/source/_toctree.yml
+docs/XTRAINER_SMOLVLA.md
 README.md
 ```
 
