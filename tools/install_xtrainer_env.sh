@@ -15,7 +15,9 @@ TORCH_VERSION="2.8.0"
 TORCHVISION_VERSION="0.23.0"
 TORCHCODEC_VERSION="0.6.0"
 MIN_DRIVER_VERSION="570.26"
-TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
+CUSTOM_PIP_INDEX_URL="${PIP_INDEX_URL:-}"
+CUSTOM_TORCH_INDEX_URL="${TORCH_INDEX_URL:-}"
+SOURCE="china"
 RECREATE=0
 CPU_ONLY=0
 INSTALL_SYSTEM_PACKAGES=1
@@ -67,15 +69,18 @@ Options:
   --env-name NAME           Conda environment name (default: xtrainer-smolvla)
   --recreate                Remove and rebuild an existing environment
   --cpu-only                Install CPU-only PyTorch; intended for Mock/server checks
+  --source NAME             Package source: china or official (default: china)
   --skip-system-packages    Do not run apt-get; use when OS packages are already installed
   -h, --help                Show this help
 
 Environment overrides:
+  PIP_INDEX_URL=<url>       Override the Python package index
   TORCH_INDEX_URL=<url>     Override the PyTorch wheel index
 
 Examples:
   bash tools/install_xtrainer_env.sh
   bash tools/install_xtrainer_env.sh --recreate
+  bash tools/install_xtrainer_env.sh --source official
   bash tools/install_xtrainer_env.sh --cpu-only --skip-system-packages
   bash tools/install_xtrainer_env.sh --env-name xtrainer-dev
 
@@ -98,8 +103,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cpu-only)
       CPU_ONLY=1
-      TORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
       shift
+      ;;
+    --source)
+      [[ $# -ge 2 ]] || die "--source requires a value"
+      SOURCE="$2"
+      shift 2
       ;;
     --skip-system-packages)
       INSTALL_SYSTEM_PACKAGES=0
@@ -117,6 +126,40 @@ done
 
 [[ "${ENV_NAME}" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid Conda environment name: ${ENV_NAME}"
 
+CONDA_SOURCE_ARGS=()
+APT_SOURCE_URL=""
+case "${SOURCE}" in
+  official)
+    DEFAULT_PIP_INDEX_URL="https://pypi.org/simple"
+    if [[ "${CPU_ONLY}" == "1" ]]; then
+      DEFAULT_TORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
+    else
+      DEFAULT_TORCH_INDEX_URL="https://download.pytorch.org/whl/cu128"
+    fi
+    ;;
+  china)
+    DEFAULT_PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
+    if [[ "${CPU_ONLY}" == "1" ]]; then
+      DEFAULT_TORCH_INDEX_URL="https://mirrors.aliyun.com/pytorch-wheels/cpu"
+    else
+      DEFAULT_TORCH_INDEX_URL="https://mirrors.aliyun.com/pytorch-wheels/cu128"
+    fi
+    APT_SOURCE_URL="https://mirrors.tuna.tsinghua.edu.cn/ubuntu"
+    CONDA_SOURCE_ARGS=(
+      --override-channels
+      -c "https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main"
+      -c "https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r"
+    )
+    ;;
+  *)
+    die "unsupported source: ${SOURCE}; expected official or china"
+    ;;
+esac
+
+PIP_INDEX_URL="${CUSTOM_PIP_INDEX_URL:-${DEFAULT_PIP_INDEX_URL}}"
+TORCH_INDEX_URL="${CUSTOM_TORCH_INDEX_URL:-${DEFAULT_TORCH_INDEX_URL}}"
+export PIP_INDEX_URL
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
@@ -130,6 +173,9 @@ source /etc/os-release
 [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "24.04" ]] || \
   die "expected Ubuntu 24.04, detected ${PRETTY_NAME:-unknown}"
 require_command conda
+log "package source: ${SOURCE}"
+log "Python index: ${PIP_INDEX_URL}"
+log "PyTorch index: ${TORCH_INDEX_URL}"
 
 if [[ "${CPU_ONLY}" == "0" ]]; then
   require_command nvidia-smi
@@ -150,8 +196,24 @@ if [[ "${INSTALL_SYSTEM_PACKAGES}" == "1" ]]; then
     require_command sudo
     SUDO_CMD=(sudo)
   fi
-  "${SUDO_CMD[@]}" apt-get update
-  "${SUDO_CMD[@]}" apt-get install -y \
+  APT_SOURCE_ARGS=()
+  if [[ -n "${APT_SOURCE_URL}" ]]; then
+    APT_SOURCE_FILE="$(mktemp)"
+    trap 'rm -f "${APT_SOURCE_FILE:-}"' EXIT
+    cat >"${APT_SOURCE_FILE}" <<EOF
+deb [arch=amd64] ${APT_SOURCE_URL} noble main restricted universe multiverse
+deb [arch=amd64] ${APT_SOURCE_URL} noble-updates main restricted universe multiverse
+deb [arch=amd64] ${APT_SOURCE_URL} noble-backports main restricted universe multiverse
+deb [arch=amd64] ${APT_SOURCE_URL} noble-security main restricted universe multiverse
+EOF
+    APT_SOURCE_ARGS=(
+      -o "Dir::Etc::sourcelist=${APT_SOURCE_FILE}"
+      -o "Dir::Etc::sourceparts=-"
+      -o "APT::Get::List-Cleanup=0"
+    )
+  fi
+  "${SUDO_CMD[@]}" apt-get "${APT_SOURCE_ARGS[@]}" update
+  "${SUDO_CMD[@]}" apt-get "${APT_SOURCE_ARGS[@]}" install -y \
     build-essential \
     ffmpeg \
     git \
@@ -166,12 +228,12 @@ if conda env list | awk 'NF && $1 !~ /^#/ {print $1}' | grep -Fxq "${ENV_NAME}";
   if [[ "${RECREATE}" == "1" ]]; then
     log "removing existing environment: ${ENV_NAME}"
     conda env remove -n "${ENV_NAME}" -y
-    conda create -n "${ENV_NAME}" "python=${PYTHON_VERSION}" pip -y
+    conda create "${CONDA_SOURCE_ARGS[@]}" -n "${ENV_NAME}" "python=${PYTHON_VERSION}" pip -y
   else
     log "reusing existing environment: ${ENV_NAME}"
   fi
 else
-  conda create -n "${ENV_NAME}" "python=${PYTHON_VERSION}" pip -y
+  conda create "${CONDA_SOURCE_ARGS[@]}" -n "${ENV_NAME}" "python=${PYTHON_VERSION}" pip -y
 fi
 
 CONDA_PYTHON=(conda run --no-capture-output -n "${ENV_NAME}" python)
@@ -190,6 +252,7 @@ stage "PyTorch"
 stage "X-trainer training and deployment dependencies"
 "${CONDA_PYTHON[@]}" -m pip install -e \
   "${REPO_ROOT}[training,smolvla,peft,feetech,intelrealsense]"
+"${CONDA_PYTHON[@]}" -m pip install modelscope
 
 stage "environment validation"
 "${CONDA_PYTHON[@]}" - "${CPU_ONLY}" <<'PY'
@@ -199,6 +262,7 @@ import accelerate
 import aiohttp
 import datasets
 import msgpack
+import modelscope
 import peft
 import pyrealsense2
 import torch

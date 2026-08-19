@@ -29,6 +29,13 @@ bash tools/install_xtrainer_env.sh
 conda activate xtrainer-smolvla
 ```
 
+安装脚本默认使用国内镜像：Ubuntu、Conda 和 PyPI 使用清华镜像，PyTorch wheel 使用阿里云镜像。换源只对本次
+脚本执行有效，不会永久修改系统 apt、Conda 或 pip 配置。需要使用官方源时执行：
+
+```bash
+bash tools/install_xtrainer_env.sh --source official
+```
+
 脚本默认会：
 
 1. 检查 Ubuntu 24.04 x86_64、Conda 和 NVIDIA 驱动。
@@ -36,7 +43,8 @@ conda activate xtrainer-smolvla
 3. 创建或复用 `xtrainer-smolvla` Conda 环境。
 4. 安装 Python 3.12、PyTorch 2.8.0 和 TorchCodec 0.6.0。
 5. 从当前仓库安装 `training`、`smolvla`、`peft`、`feetech` 和 `intelrealsense` extras。
-6. 验证训练、WebSocket、Feetech 和 RealSense 的关键导入。
+6. 安装 ModelScope 下载依赖。
+7. 验证训练、WebSocket、Feetech 和 RealSense 的关键导入。
 
 如果环境已经存在，脚本会复用并补齐依赖。需要完全重建时使用：
 
@@ -74,23 +82,38 @@ conda activate xtrainer-dev
 
 ## 下载 SmolVLA 模型权重
 
-完成环境安装后，在仓库根目录下载默认基础模型：
+完成环境安装后，从 Hugging Face 或 ModelScope 中选择一个下载入口即可。两个脚本默认都把基础模型保存到
+`models/smolvla_base`，不需要重复下载。
+
+Hugging Face 版本：
 
 ```bash
-bash tools/download_smolvla_weights.sh
+bash tools/download_smolvla_weights_hf.sh
 ```
 
-默认从 Hugging Face 下载 `lerobot/smolvla_base`，保存到 `models/smolvla_base`。已有文件会被复用，下载中断后
-可以再次执行同一命令。
-
-自定义模型、保存位置或固定 revision：
+如需使用 Hugging Face 镜像站，可以显式指定 endpoint：
 
 ```bash
-bash tools/download_smolvla_weights.sh \
+bash tools/download_smolvla_weights_hf.sh --endpoint https://hf-mirror.com
+```
+
+ModelScope 版本：
+
+```bash
+bash tools/download_smolvla_weights_modelscope.sh
+```
+
+两个版本默认下载 `lerobot/smolvla_base`。已有文件会被复用，下载中断后可以再次执行相同命令。
+
+Hugging Face 自定义模型、保存位置或固定 revision：
+
+```bash
+bash tools/download_smolvla_weights_hf.sh \
   --repo-id lerobot/smolvla_base \
   --output-dir /data/models/smolvla_base \
   --revision main
 ```
 
-如果模型需要登录权限，先执行 `hf auth login`，或通过 `HF_TOKEN` 环境变量提供令牌。使用其他 Conda 环境时
-传入 `--env-name`。脚本只下载模型文件，不会启动训练、策略服务或真机程序。
+ModelScope 使用 `--model-id` 传入模型标识，其他参数保持一致。如果模型需要登录权限，Hugging Face 使用
+`hf auth login` 或 `HF_TOKEN`，ModelScope 使用 `MODELSCOPE_API_TOKEN`。使用其他 Conda 环境时传入
+`--env-name`。两个脚本都只下载模型文件，不会启动训练、策略服务或真机程序。

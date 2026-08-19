@@ -21,6 +21,9 @@ conda activate xtrainer-smolvla
 Intel RealSense 依赖。GPU 模式要求 NVIDIA 驱动不低于 `570.26`，但不要求预装系统 CUDA Toolkit。
 脚本不会安装显卡驱动、下载模型或数据集，也不会修改串口和 USB 权限。
 
+安装默认使用国内镜像完成 Ubuntu、Conda、PyPI 和 PyTorch 依赖下载，并且不会永久修改系统源配置。如需改用
+官方源，执行 `bash tools/install_xtrainer_env.sh --source official`。
+
 只需要运行 Mock Policy 或无 GPU 的机器人端时，可以安装 CPU 环境：
 
 ```bash
@@ -33,10 +36,14 @@ CUDA 环境；CPU 模式不适合实际训练，也不建议用于有实时性�
 
 ## 下载基础模型权重
 
-安装环境后，可以把默认的 `lerobot/smolvla_base` 提前下载到本地：
+安装环境后，可以选择 Hugging Face 或 ModelScope，把默认的 `lerobot/smolvla_base` 提前下载到本地：
 
 ```bash
-bash tools/download_smolvla_weights.sh
+# Hugging Face
+bash tools/download_smolvla_weights_hf.sh
+
+# 或者使用 ModelScope
+bash tools/download_smolvla_weights_modelscope.sh
 ```
 
 默认保存目录为 `models/smolvla_base`。离线训练时，将训练配置中的 `policy.repo_id` 改为该本地目录；离线部署时，
