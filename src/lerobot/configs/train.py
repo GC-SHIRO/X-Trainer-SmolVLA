@@ -180,6 +180,9 @@ class TrainPipelineConfig(HubMixin):
 
     # Rename map for the observation to override the image and state keys
     rename_map: dict[str, str] = field(default_factory=dict)
+    # Optional X-trainer dataset/robot contract recorded alongside a training run.
+    # It is consumed by X-trainer tooling rather than the generic training loop.
+    xtrainer: dict[str, Any] = field(default_factory=dict)
     checkpoint_path: Path | None = field(init=False, default=None)
 
     @property
