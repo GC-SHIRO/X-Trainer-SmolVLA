@@ -3,6 +3,7 @@ import asyncio
 import numpy as np
 import pytest
 
+from deploy.xtrainer.msgpack_numpy import protocol_metadata
 from deploy.xtrainer.real.environment import (
     LEFT_WRIST_IMAGE_KEY,
     RIGHT_WRIST_IMAGE_KEY,
@@ -67,14 +68,16 @@ class MockEnvironment:
 class MockPolicy:
     def __init__(self, chunks, *, metadata=None, hang_after=None):
         self.chunks = [np.asarray(chunk, dtype=np.float64) for chunk in chunks]
-        self.server_metadata = metadata or {
-            "policy": {
-                "model_type": "smolvla",
-                "schema_version": 1,
-                "action_dim": 14,
-                "state_dim": 14,
+        self.server_metadata = metadata or protocol_metadata(
+            {
+                "policy": {
+                    "model_type": "smolvla",
+                    "schema_version": 1,
+                    "action_dim": 14,
+                    "state_dim": 14,
+                }
             }
-        }
+        )
         self.hang_after = hang_after
         self.infer_calls = 0
         self.active_infers = 0
@@ -236,15 +239,17 @@ def test_prefetch_timeout_closes_policy_and_hardware():
 
 def test_run_applies_reset_pose_from_policy_metadata_and_cleans_up():
     reset_pose = np.arange(14, dtype=np.float64) / 10
-    metadata = {
-        "policy": {
-            "model_type": "smolvla",
-            "schema_version": 1,
-            "action_dim": 14,
-            "state_dim": 14,
-            "reset_pose": reset_pose.tolist(),
+    metadata = protocol_metadata(
+        {
+            "policy": {
+                "model_type": "smolvla",
+                "schema_version": 1,
+                "action_dim": 14,
+                "state_dim": 14,
+                "reset_pose": reset_pose.tolist(),
+            }
         }
-    }
+    )
     args = parse_args(
         [
             "--host",

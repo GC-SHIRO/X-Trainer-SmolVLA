@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from deploy.xtrainer.msgpack_numpy import PROTOCOL_VERSION, SCHEMA_VERSION
 from deploy.xtrainer.real import XTrainerRealEnvironment, XTrainerSafetyConfig
 from deploy.xtrainer.real.environment import (
     LEFT_WRIST_IMAGE_KEY,
@@ -229,6 +230,17 @@ async def run_control_loop(
 
 
 def _validate_server_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    expected_transport = {
+        "protocol": "xtrainer.websocket.msgpack",
+        "protocol_version": PROTOCOL_VERSION,
+        "schema_version": SCHEMA_VERSION,
+    }
+    for key, value in expected_transport.items():
+        if metadata.get(key) != value:
+            raise RuntimeError(
+                f"Unexpected transport metadata {key}: {metadata.get(key)!r}, expected {value!r}"
+            )
+
     policy_metadata = metadata.get("policy")
     if not isinstance(policy_metadata, dict):
         raise RuntimeError("Server metadata is missing the policy contract")
