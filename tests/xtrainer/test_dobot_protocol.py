@@ -89,7 +89,9 @@ def test_dobot_move_joints_sends_motion_command():
 
     arm.move_joints(np.deg2rad([1, 2, 3, 4, 5, 6]))
 
-    assert FakeSocket.created[1].sent[-1] == b"MovJ(1.000000,2.000000,3.000000,4.000000,5.000000,6.000000)\n"
+    assert FakeSocket.created[1].sent[-1] == (
+        b"ServoJ(1.000000,2.000000,3.000000,4.000000,5.000000,6.000000,0.030000,gain=500)\n"
+    )
 
 
 def test_dobot_partial_connection_failure_closes_opened_socket():
@@ -112,6 +114,12 @@ def test_split_xtrainer_arm_action_uses_fixed_indices():
 def test_make_joint_command_rejects_bad_shape():
     with pytest.raises(ValueError):
         make_joint_command([1, 2, 3])
+
+
+def test_make_joint_command_matches_reference_servoj_format():
+    assert make_joint_command([1, 2, 3, 4, 5, 6]) == (
+        "ServoJ(1.000000,2.000000,3.000000,4.000000,5.000000,6.000000,0.030000,gain=500)"
+    )
 
 
 def test_default_realsense_serials_map_to_observation_keys():
