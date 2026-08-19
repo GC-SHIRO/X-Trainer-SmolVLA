@@ -30,6 +30,7 @@ from .lerobot_dataset import LeRobotDataset
 from .multi_dataset import MultiLeRobotDataset
 from .streaming_dataset import StreamingLeRobotDataset
 from .utils import resolve_episode_indices
+from .v21 import LeRobotDatasetMetadataV21, LeRobotDatasetV21
 
 
 def resolve_delta_timestamps(
@@ -101,7 +102,38 @@ def resolve_delta_timestamps(
     return delta_timestamps
 
 
-def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset:
+def _make_v21_dataset(
+    cfg: TrainPipelineConfig,
+    *,
+    episodes: list[int] | None,
+    image_transforms: ImageTransforms | None,
+    delta_timestamps: dict[str, list] | None,
+) -> LeRobotDatasetV21:
+    """Build the local, read-only v2.1 adapter without touching the v3 loader."""
+    return LeRobotDatasetV21(
+        cfg.dataset.repo_id,
+        root=cfg.dataset.root,
+        episodes=episodes,
+        delta_timestamps=delta_timestamps,
+        image_transforms=image_transforms,
+        video_backend=cfg.dataset.video_backend,
+        return_uint8=True,
+        tolerance_s=cfg.tolerance_s,
+    )
+
+
+def _add_imagenet_stats(dataset: LeRobotDataset | LeRobotDatasetV21) -> None:
+    if not dataset.meta.camera_keys:
+        return
+    for key in dataset.meta.camera_keys:
+        if key in dataset.meta.depth_keys:
+            continue  # Exclude depth keys from ImageNet stats
+        dataset.meta.stats.setdefault(key, {})
+        for stats_type, stats in IMAGENET_STATS.items():
+            dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+
+
+def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | LeRobotDatasetV21 | MultiLeRobotDataset:
     """Handles the logic of setting up delta timestamps and image transforms before creating a dataset.
 
     Args:
@@ -111,53 +143,80 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         NotImplementedError: The MultiLeRobotDataset is currently deactivated.
 
     Returns:
-        LeRobotDataset | MultiLeRobotDataset
+        LeRobotDataset | LeRobotDatasetV21 | MultiLeRobotDataset
     """
     image_transforms = (
         ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
     )
 
+    if cfg.dataset.format_version not in ("v2.1", "v3.0"):
+        raise ValueError(
+            "dataset.format_version must be 'v3.0' or 'v2.1', "
+            f"got {cfg.dataset.format_version!r}"
+        )
+
     if isinstance(cfg.dataset.repo_id, str):
-        ds_meta = LeRobotDatasetMetadata(
-            cfg.dataset.repo_id,
-            root=cfg.dataset.root,
-            revision=cfg.dataset.revision,
-            repo_type=cfg.dataset.repo_type,
-        )
-        delta_timestamps = resolve_delta_timestamps(cfg.trainable_config, ds_meta, cfg.rename_map)
-        episodes = resolve_episode_indices(
-            cfg.dataset.episodes, ds_meta.total_episodes, cfg.dataset.exclude_episodes
-        )
-        if not cfg.dataset.streaming:
-            if cfg.dataset.repo_type == "bucket":
-                raise ValueError(
-                    "repo_type='bucket' is streaming-only: set dataset.streaming=true to train from an HF Storage Bucket."
-                )
-            dataset = LeRobotDataset(
-                cfg.dataset.repo_id,
-                root=cfg.dataset.root,
+        if cfg.dataset.format_version == "v2.1":
+            # Keep these checks here too: callers may mutate a DatasetConfig after
+            # construction, and v2.1 must never silently fall through to v3 code.
+            if cfg.dataset.streaming:
+                raise ValueError("dataset.format_version='v2.1' does not support streaming.")
+            if cfg.dataset.repo_type != "dataset":
+                raise ValueError("dataset.format_version='v2.1' only supports repo_type='dataset'.")
+
+            ds_meta = LeRobotDatasetMetadataV21(cfg.dataset.repo_id, root=cfg.dataset.root)
+            delta_timestamps = resolve_delta_timestamps(cfg.trainable_config, ds_meta, cfg.rename_map)
+            episodes = resolve_episode_indices(
+                cfg.dataset.episodes, ds_meta.total_episodes, cfg.dataset.exclude_episodes
+            )
+            dataset = _make_v21_dataset(
+                cfg,
                 episodes=episodes,
-                delta_timestamps=delta_timestamps,
                 image_transforms=image_transforms,
-                revision=cfg.dataset.revision,
-                video_backend=cfg.dataset.video_backend,
-                return_uint8=True,
-                depth_output_unit=cfg.dataset.depth_output_unit,
-                tolerance_s=cfg.tolerance_s,
+                delta_timestamps=delta_timestamps,
             )
         else:
-            dataset = StreamingLeRobotDataset(
+            # v3.0 retains the existing metadata loader and dataset implementation.
+            ds_meta = LeRobotDatasetMetadata(
                 cfg.dataset.repo_id,
                 root=cfg.dataset.root,
-                episodes=episodes,
-                delta_timestamps=delta_timestamps,
-                image_transforms=image_transforms,
                 revision=cfg.dataset.revision,
-                max_num_shards=cfg.num_workers,
-                tolerance_s=cfg.tolerance_s,
-                return_uint8=True,
                 repo_type=cfg.dataset.repo_type,
             )
+            delta_timestamps = resolve_delta_timestamps(cfg.trainable_config, ds_meta, cfg.rename_map)
+            episodes = resolve_episode_indices(
+                cfg.dataset.episodes, ds_meta.total_episodes, cfg.dataset.exclude_episodes
+            )
+            if not cfg.dataset.streaming:
+                if cfg.dataset.repo_type == "bucket":
+                    raise ValueError(
+                        "repo_type='bucket' is streaming-only: set dataset.streaming=true to train from an HF Storage Bucket."
+                    )
+                dataset = LeRobotDataset(
+                    cfg.dataset.repo_id,
+                    root=cfg.dataset.root,
+                    episodes=episodes,
+                    delta_timestamps=delta_timestamps,
+                    image_transforms=image_transforms,
+                    revision=cfg.dataset.revision,
+                    video_backend=cfg.dataset.video_backend,
+                    return_uint8=True,
+                    depth_output_unit=cfg.dataset.depth_output_unit,
+                    tolerance_s=cfg.tolerance_s,
+                )
+            else:
+                dataset = StreamingLeRobotDataset(
+                    cfg.dataset.repo_id,
+                    root=cfg.dataset.root,
+                    episodes=episodes,
+                    delta_timestamps=delta_timestamps,
+                    image_transforms=image_transforms,
+                    revision=cfg.dataset.revision,
+                    max_num_shards=cfg.num_workers,
+                    tolerance_s=cfg.tolerance_s,
+                    return_uint8=True,
+                    repo_type=cfg.dataset.repo_type,
+                )
     else:
         raise NotImplementedError("The MultiLeRobotDataset isn't supported for now.")
         dataset = MultiLeRobotDataset(
@@ -173,19 +232,17 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         )
 
     if cfg.dataset.use_imagenet_stats:
-        for key in dataset.meta.camera_keys:
-            if key in dataset.meta.depth_keys:
-                continue  # Exclude depth keys from ImageNet stats
-            dataset.meta.stats.setdefault(key, {})
-            for stats_type, stats in IMAGENET_STATS.items():
-                dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+        _add_imagenet_stats(dataset)
 
     return dataset
 
 
 def make_train_eval_datasets(
     cfg: TrainPipelineConfig,
-) -> tuple[LeRobotDataset | MultiLeRobotDataset, LeRobotDataset | None]:
+) -> tuple[
+    LeRobotDataset | LeRobotDatasetV21 | MultiLeRobotDataset,
+    LeRobotDataset | LeRobotDatasetV21 | None,
+]:
     """Create train and optional eval datasets by splitting episodes based on eval_split.
 
     The last ceil(n_episodes * eval_split) episodes per task are held out for evaluation.
@@ -200,7 +257,12 @@ def make_train_eval_datasets(
         full_dataset.episodes if full_dataset.episodes is not None else list(range(full_dataset.num_episodes))
     )
 
-    episode_tasks = full_dataset.meta.episodes["tasks"]
+    if cfg.dataset.format_version == "v2.1":
+        episode_tasks = {
+            episode["episode_index"]: episode.get("tasks", []) for episode in full_dataset.meta.episodes
+        }
+    else:
+        episode_tasks = full_dataset.meta.episodes["tasks"]
     task_to_episodes: dict[str, list[int]] = {}
     for ep_idx in base_episodes:
         task_key = episode_tasks[ep_idx][0] if episode_tasks[ep_idx] else ""
@@ -228,37 +290,46 @@ def make_train_eval_datasets(
         ImageTransforms(cfg.dataset.image_transforms) if cfg.dataset.image_transforms.enable else None
     )
 
-    train_dataset = LeRobotDataset(
-        cfg.dataset.repo_id,
-        root=cfg.dataset.root,
-        episodes=train_episodes,
-        delta_timestamps=delta_timestamps,
-        image_transforms=train_image_transforms,
-        revision=cfg.dataset.revision,
-        video_backend=cfg.dataset.video_backend,
-        return_uint8=True,
-        tolerance_s=cfg.tolerance_s,
-    )
+    if cfg.dataset.format_version == "v2.1":
+        train_dataset = _make_v21_dataset(
+            cfg,
+            episodes=train_episodes,
+            image_transforms=train_image_transforms,
+            delta_timestamps=delta_timestamps,
+        )
+        eval_dataset = _make_v21_dataset(
+            cfg,
+            episodes=eval_episodes,
+            image_transforms=None,
+            delta_timestamps=delta_timestamps,
+        )
+    else:
+        train_dataset = LeRobotDataset(
+            cfg.dataset.repo_id,
+            root=cfg.dataset.root,
+            episodes=train_episodes,
+            delta_timestamps=delta_timestamps,
+            image_transforms=train_image_transforms,
+            revision=cfg.dataset.revision,
+            video_backend=cfg.dataset.video_backend,
+            return_uint8=True,
+            tolerance_s=cfg.tolerance_s,
+        )
 
-    eval_dataset = LeRobotDataset(
-        cfg.dataset.repo_id,
-        root=cfg.dataset.root,
-        episodes=eval_episodes,
-        delta_timestamps=delta_timestamps,
-        image_transforms=None,
-        revision=cfg.dataset.revision,
-        video_backend=cfg.dataset.video_backend,
-        return_uint8=True,
-        tolerance_s=cfg.tolerance_s,
-    )
+        eval_dataset = LeRobotDataset(
+            cfg.dataset.repo_id,
+            root=cfg.dataset.root,
+            episodes=eval_episodes,
+            delta_timestamps=delta_timestamps,
+            image_transforms=None,
+            revision=cfg.dataset.revision,
+            video_backend=cfg.dataset.video_backend,
+            return_uint8=True,
+            tolerance_s=cfg.tolerance_s,
+        )
 
     if cfg.dataset.use_imagenet_stats:
         for ds in (train_dataset, eval_dataset):
-            for key in ds.meta.camera_keys:
-                if key in ds.meta.depth_keys:
-                    continue
-                ds.meta.stats.setdefault(key, {})
-                for stats_type, stats in IMAGENET_STATS.items():
-                    ds.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+            _add_imagenet_stats(ds)
 
     return train_dataset, eval_dataset

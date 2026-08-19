@@ -32,11 +32,15 @@ class DatasetConfig:
     # "dataset_index" into the returned item. The index mapping is made according to the order in which the
     # datasets are provided.
     repo_id: str
+    # Dataset layout consumed by the training factory. v3.0 remains the
+    # default; v2.1 is a deliberately narrow, read-only X-trainer adapter.
+    format_version: str = "v3.0"
     # Hub repository type: "dataset" (default) or "bucket" for an HF Storage Bucket streamed over
     # hf://buckets/. Buckets are streaming-only, so "bucket" requires streaming=true.
     repo_type: str = "dataset"
     # Root directory for a concrete local dataset tree (e.g. 'dataset/path'). If None, local datasets are
     # looked up under $HF_LEROBOT_HOME/repo_id and Hub downloads use a revision-safe cache under $HF_LEROBOT_HOME/hub.
+    # The v2.1 compatibility adapter is local-only and does not perform Hub downloads.
     root: str | None = None
     episodes: list[int] | None = None
     # Episode indices to drop (e.g. corrupt or heterogeneous ones). Applied on top of `episodes`.
@@ -56,8 +60,18 @@ class DatasetConfig:
     eval_split: float = 0.0
 
     def __post_init__(self) -> None:
+        if self.format_version not in ("v2.1", "v3.0"):
+            raise ValueError(
+                "dataset.format_version must be 'v3.0' or 'v2.1', "
+                f"got {self.format_version!r}"
+            )
         if self.repo_type not in ("dataset", "bucket"):
             raise ValueError(f"repo_type must be 'dataset' or 'bucket', got {self.repo_type!r}")
+        if self.format_version == "v2.1" and self.repo_type != "dataset":
+            raise ValueError(
+                "dataset.format_version='v2.1' only supports repo_type='dataset'; "
+                "HF Storage Buckets are streaming-only."
+            )
         if self.repo_type == "bucket" and not self.streaming:
             raise ValueError(
                 "repo_type='bucket' is streaming-only: set streaming=true to train from an HF Storage Bucket."
@@ -66,6 +80,12 @@ class DatasetConfig:
             raise ValueError(
                 "eval_split requires map-style datasets and is not supported with repo_type='bucket'."
             )
+        if self.format_version == "v2.1":
+            if self.streaming:
+                raise ValueError(
+                    "dataset.format_version='v2.1' does not support streaming; "
+                    "use the local read-only v2.1 adapter."
+                )
         if self.depth_output_unit not in (DEPTH_METER_UNIT, DEPTH_MILLIMETER_UNIT):
             raise ValueError(
                 f"depth_output_unit must be '{DEPTH_METER_UNIT}' or '{DEPTH_MILLIMETER_UNIT}', got {self.depth_output_unit!r}"
