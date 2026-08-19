@@ -45,7 +45,7 @@ SmolVLA 的任务文本。14 维向量顺序固定为：左臂关节 1–6、左
 
 ## 单 GPU 全量微调
 
-两个启动脚本均使用 `configs/xtrainer/train_smolvla.yaml`，其中指定
+全量训练启动脚本使用 `configs/xtrainer/train_smolvla.yaml`，其中指定
 `dataset.format_version: v2.1` 和 `lerobot/smolvla_base`。在启动 GPU 训练前，脚本会默认抽样校验
 数据集及视频。
 
@@ -91,3 +91,37 @@ bash scripts/xtrainer/train_smolvla.sh \
 第一版仅支持单个本地 v2.1 数据集。streaming、HF Storage Bucket 和多数据集训练会在启动前被拒绝。如需分布式
 训练，请直接使用仓库已文档化的 `torchrun` 工作流，并保持
 `--dataset.format_version=v2.1` 配置不变。
+
+## LoRA 微调
+
+LoRA 工作流使用 `configs/xtrainer/train_smolvla_lora.yaml` 和
+`scripts/xtrainer/train_smolvla_lora.sh`。开始前还需要安装 PEFT 依赖：
+
+```bash
+pip install -e ".[peft]"
+```
+
+它从 `lerobot/smolvla_base` 开始训练，并固定使用：
+
+```yaml
+peft:
+  method_type: LORA
+  r: 64
+  lora_alpha: 64
+```
+
+配置不指定 `target_modules`，因此复用 SmolVLA 内置的默认 LoRA 目标模块；EMA 被禁用，且分片并行会被
+训练配置拒绝。LoRA 输出目录独立于全量微调输出目录。
+
+```bash
+bash scripts/xtrainer/train_smolvla_lora.sh \
+  --dataset-root /data/xtrainer/my_xtrainer_dataset \
+  --device cuda \
+  --batch-size 8 \
+  --steps 100000 \
+  --output-dir outputs/train/xtrainer_smolvla_lora
+```
+
+最小 smoke run 可将 `--batch-size` 和 `--steps` 都设为 `1`。成功 checkpoint 的
+`pretrained_model` 目录应包含 `adapter_model.safetensors`、`adapter_config.json`、策略配置和 processor
+文件。该 adapter 不是独立模型：部署或重新加载时必须配合其声明的 `lerobot/smolvla_base` base model。

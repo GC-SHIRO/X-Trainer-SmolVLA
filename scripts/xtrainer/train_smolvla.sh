@@ -5,7 +5,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
-TRAIN_CONFIG="${REPO_ROOT}/configs/xtrainer/train_smolvla.yaml"
+TRAIN_CONFIG="${XTRAINER_TRAIN_CONFIG:-${REPO_ROOT}/configs/xtrainer/train_smolvla.yaml}"
+TRAINING_DESCRIPTION="${XTRAINER_TRAINING_DESCRIPTION:-SmolVLA 全量微调}"
 VALIDATOR="${SCRIPT_DIR}/validate_dataset_v21.py"
 
 DATASET_ROOT=""
@@ -17,10 +18,10 @@ RESUME_CHECKPOINT=""
 SKIP_VALIDATION=false
 
 usage() {
-    cat <<'EOF'
+    cat <<EOF
 Usage: scripts/xtrainer/train_smolvla.sh --dataset-root PATH [options]
 
-Train SmolVLA with configs/xtrainer/train_smolvla.yaml and the standard
+Run ${TRAINING_DESCRIPTION} with ${TRAIN_CONFIG#"${REPO_ROOT}/"} and the standard
 lerobot-train loop. The v2.1 dataset is validated before training by default.
 
 Required:
@@ -101,6 +102,10 @@ if [[ -z "$DATASET_ROOT" ]]; then
 fi
 if [[ ! -d "$DATASET_ROOT" ]]; then
     echo "error: dataset root does not exist or is not a directory: $DATASET_ROOT" >&2
+    exit 2
+fi
+if [[ ! -f "$TRAIN_CONFIG" ]]; then
+    echo "error: training config does not exist: $TRAIN_CONFIG" >&2
     exit 2
 fi
 
