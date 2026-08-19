@@ -1,0 +1,110 @@
+schema_version: 1
+policy:
+  type: smolvla
+  checkpoint: outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model
+  lora_adapter: null
+  device: cuda
+  actions_per_chunk: 50
+
+network:
+  host: 0.0.0.0
+  port: 8000
+  websocket_path: /policy
+  health_path: /healthz
+  protocol: websocket
+  serialization: msgpack_numpy
+  request_timeout_s: 10.0
+  max_payload_mb: 64
+  trusted_lan_only: true
+
+xtrainer:
+  schema_version: 1
+  control_hz: 20
+  image_size: [640, 480]
+  action_dim: 14
+  state_dim: 14
+  chunk_size: 50
+  prefetch_threshold: 0.7
+  overlap_blend:
+    old_weight: 0.3
+    new_weight: 0.7
+  observation_keys:
+    state: observation.state
+    images:
+      top: observation.images.top
+      left_wrist: observation.images.left_wrist
+      right_wrist: observation.images.right_wrist
+    task: task
+  action_key: action
+  state_action_order:
+    - {index: 0, name: left_arm_joint_1, unit: rad}
+    - {index: 1, name: left_arm_joint_2, unit: rad}
+    - {index: 2, name: left_arm_joint_3, unit: rad}
+    - {index: 3, name: left_arm_joint_4, unit: rad}
+    - {index: 4, name: left_arm_joint_5, unit: rad}
+    - {index: 5, name: left_arm_joint_6, unit: rad}
+    - {index: 6, name: left_gripper, unit: normalized_0_1}
+    - {index: 7, name: right_arm_joint_1, unit: rad}
+    - {index: 8, name: right_arm_joint_2, unit: rad}
+    - {index: 9, name: right_arm_joint_3, unit: rad}
+    - {index: 10, name: right_arm_joint_4, unit: rad}
+    - {index: 11, name: right_arm_joint_5, unit: rad}
+    - {index: 12, name: right_arm_joint_6, unit: rad}
+    - {index: 13, name: right_gripper, unit: normalized_0_1}
+
+cameras:
+  top:
+    serial: "409122273405"
+    observation_key: observation.images.top
+    size: [640, 480]
+    fps: 30
+  left_wrist:
+    serial: "412622272997"
+    observation_key: observation.images.left_wrist
+    size: [640, 480]
+    fps: 30
+  right_wrist:
+    serial: "412622271417"
+    observation_key: observation.images.right_wrist
+    size: [640, 480]
+    fps: 30
+
+hardware:
+  arms:
+    left:
+      ip: 192.168.5.1
+      dashboard_port: 29999
+      motion_port: 30003
+      joint_indices: [0, 1, 2, 3, 4, 5]
+    right:
+      ip: 192.168.5.2
+      dashboard_port: 29999
+      motion_port: 30003
+      joint_indices: [7, 8, 9, 10, 11, 12]
+  grippers:
+    left:
+      port: /dev/ttyUSB1
+      id: 21
+      action_index: 6
+      range: [0.0, 1.0]
+    right:
+      port: /dev/ttyUSB0
+      id: 22
+      action_index: 13
+      range: [0.0, 1.0]
+
+safety:
+  max_joint_delta_rad: 0.17
+  max_gripper_delta: 0.05
+  ramp_step_rad: 0.01
+  ramp_max_steps: 100
+  gripper_update_threshold: 0.02
+  servo_step_limit: 0.9
+  max_switch_delta_rad: 0.12
+  switch_blend_steps: 5
+  max_delta_per_step_rad: 0.0
+  joint_position_limit_rad: [-6.283185307179586, 6.283185307179586]
+  gripper_limit: [0.0, 1.0]
+  require_finite_actions: true
+  clamp_after_blend: true
+  stop_on_policy_error: true

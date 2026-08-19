@@ -1,0 +1,66 @@
+dataset:
+  repo_id: xtrainer/smolvla-v21
+  root: null
+  format_version: v2.1
+  streaming: false
+  eval_split: 0.0
+
+policy:
+  type: smolvla
+  path: lerobot/smolvla_base
+  chunk_size: 50
+  n_action_steps: 50
+  n_obs_steps: 1
+  max_state_dim: 32
+  max_action_dim: 32
+  resize_imgs_with_padding: [512, 512]
+  load_vlm_weights: true
+
+output_dir: outputs/train/xtrainer_smolvla_full
+job_name: xtrainer_smolvla_full
+batch_size: 8
+steps: 100000
+num_workers: 4
+save_freq: 20000
+env_eval_freq: 0
+eval_steps: 0
+use_policy_training_preset: true
+
+rename_map: {}
+
+xtrainer:
+  schema_version: 1
+  dataset_format_version: v2.1
+  observation_keys:
+    state: observation.state
+    images:
+      top: observation.images.top
+      left_wrist: observation.images.left_wrist
+      right_wrist: observation.images.right_wrist
+    task: task
+  action_key: action
+  state_action_order:
+    - {index: 0, name: left_arm_joint_1, unit: rad}
+    - {index: 1, name: left_arm_joint_2, unit: rad}
+    - {index: 2, name: left_arm_joint_3, unit: rad}
+    - {index: 3, name: left_arm_joint_4, unit: rad}
+    - {index: 4, name: left_arm_joint_5, unit: rad}
+    - {index: 5, name: left_arm_joint_6, unit: rad}
+    - {index: 6, name: left_gripper, unit: normalized_0_1}
+    - {index: 7, name: right_arm_joint_1, unit: rad}
+    - {index: 8, name: right_arm_joint_2, unit: rad}
+    - {index: 9, name: right_arm_joint_3, unit: rad}
+    - {index: 10, name: right_arm_joint_4, unit: rad}
+    - {index: 11, name: right_arm_joint_5, unit: rad}
+    - {index: 12, name: right_arm_joint_6, unit: rad}
+    - {index: 13, name: right_gripper, unit: normalized_0_1}
+  cameras:
+    top:
+      serial: "409122273405"
+      observation_key: observation.images.top
+    left_wrist:
+      serial: "412622272997"
+      observation_key: observation.images.left_wrist
+    right_wrist:
+      serial: "412622271417"
+      observation_key: observation.images.right_wrist
