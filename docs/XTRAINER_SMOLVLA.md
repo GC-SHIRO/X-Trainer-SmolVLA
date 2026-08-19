@@ -46,9 +46,13 @@ bash tools/download_smolvla_weights_hf.sh
 bash tools/download_smolvla_weights_modelscope.sh
 ```
 
-默认保存目录为 `models/smolvla_base`。离线训练时，将训练配置中的 `policy.repo_id` 改为该本地目录；离线部署时，
+默认保存目录为 `models/smolvla_base`。离线训练时，将训练配置中的 `policy.path` 改为该本地目录；离线部署时，
 把它传给 `serve_policy.py --checkpoint models/smolvla_base`。自定义模型 ID、保存目录、revision 和 Conda 环境名的
 方法见 [`tools/README.md`](../tools/README.md)。LoRA adapter 只包含增量参数，因此部署 LoRA 前也必须准备基础模型。
+
+全量训练和 LoRA 启动脚本会在新训练时自动检查 `models/smolvla_base/config.json`。该文件由两个下载脚本的默认
+目录生成；存在时，脚本优先从本地加载，不会访问 Hugging Face。断点续训不会使用这个自动覆盖，始终以 checkpoint
+保存的策略配置为准。
 
 ## 数据集目录与契约
 
@@ -96,6 +100,9 @@ bash scripts/xtrainer/train_smolvla.sh \
   --steps 100000 \
   --output-dir outputs/train/xtrainer_smolvla_full
 ```
+
+`--device` 会覆盖策略的运行设备，可设为 `cuda`、`cuda:0` 或 `cpu`。即使基础模型路径由 YAML 的
+`policy.path` 指定，也可以正常传入该参数；策略配置会在加载基础模型时再应用此覆盖值。
 
 使用 `--help` 查看启动脚本帮助。脚本会拒绝缺失或不存在的数据集目录；只有在数据集已校验且明确需要
 跳过只读预检时，才使用 `--skip-validation`。
@@ -345,6 +352,11 @@ python scripts/xtrainer/run_real.py \
 
 确认机器人端的 `--host` 使用策略机的局域网 IP，而不是策略机自己的 `127.0.0.1`；同时检查 TCP 8000
 端口和防火墙。服务端绑定 `0.0.0.0` 只表示监听所有网卡，它不是机器人端应填写的目标地址。
+
+### 训练启动时提示 `policy: Could not decode ... got {'device': 'cuda'}`
+
+这表示当前代码没有把 `--policy.device` 正确延后到基础模型配置加载阶段，不是数据集校验失败。确认仓库包含
+`src/lerobot/configs/parser.py` 的 YAML `policy.path` 二次过滤修复后，保留 `--device cuda` 原样重试即可。
 
 ### 提示状态或动作不是 14 维
 

@@ -8,6 +8,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 TRAIN_CONFIG="${XTRAINER_TRAIN_CONFIG:-${REPO_ROOT}/configs/xtrainer/train_smolvla.yaml}"
 TRAINING_DESCRIPTION="${XTRAINER_TRAINING_DESCRIPTION:-SmolVLA 全量微调}"
 VALIDATOR="${SCRIPT_DIR}/validate_dataset_v21.py"
+LOCAL_POLICY_PATH="${REPO_ROOT}/models/smolvla_base"
 
 DATASET_ROOT=""
 OUTPUT_DIR=""
@@ -127,6 +128,10 @@ if [[ -n "$RESUME_CHECKPOINT" ]]; then
     train_args+=("--resume=true" "--config_path=$RESUME_CHECKPOINT")
 else
     train_args+=("--config_path=$TRAIN_CONFIG")
+    if [[ -f "${LOCAL_POLICY_PATH}/config.json" ]]; then
+        echo "using local SmolVLA weights: ${LOCAL_POLICY_PATH}"
+        train_args+=("--policy.path=$LOCAL_POLICY_PATH")
+    fi
 fi
 train_args+=("--dataset.root=$DATASET_ROOT")
 

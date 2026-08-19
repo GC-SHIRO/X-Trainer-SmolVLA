@@ -418,6 +418,9 @@ def wrap(config_path: Path | None = None) -> Callable[[F], F]:
                     # Also extract path fields from the YAML/JSON config file
                     if config_path_cli:
                         config_path_cli = extract_path_fields_from_config(config_path_cli, path_fields)
+                        # Extraction may reveal a YAML policy.path only after the first filter.
+                        # Keep its nested CLI overrides for from_pretrained(), not root parsing.
+                        cli_args = filter_path_args(path_fields, cli_args)
                 try:
                     if has_method(argtype, "from_pretrained") and config_path_cli:
                         cli_args = filter_arg("config_path", cli_args)
