@@ -18,12 +18,21 @@ class MockArm:
         self.commands = []
         self.connected = False
         self.closed = False
+        self.enabled = False
+        self.disabled = False
 
     def connect(self):
         self.connected = True
 
     def close(self):
         self.closed = True
+
+    def enable(self):
+        self.enabled = True
+
+    def disable(self):
+        self.disabled = True
+        self.enabled = False
 
     def read_joints(self):
         return self.joints.copy()
@@ -81,6 +90,7 @@ def make_env(**kwargs):
         "left_wrist": MockCamera("left_wrist", "observation.images.left_wrist"),
         "right_wrist": MockCamera("right_wrist", "observation.images.right_wrist"),
     }
+    sleep_fn = kwargs.pop("sleep_fn", lambda _seconds: None)
     return XTrainerRealEnvironment(
         left_arm=MockArm(np.arange(6, dtype=np.float32)),
         right_arm=MockArm(np.arange(7, 13, dtype=np.float32)),
@@ -88,7 +98,7 @@ def make_env(**kwargs):
         right_gripper=MockGripper(0.75),
         cameras=cameras,
         task="pick",
-        sleep_fn=lambda _seconds: None,
+        sleep_fn=sleep_fn,
         **kwargs,
     )
 
@@ -135,6 +145,7 @@ def test_apply_action_splits_left_right_arms_and_grippers_by_fixed_indices():
     )
     env.reset()
     action = np.arange(14, dtype=np.float32) / 10.0
+    action[13] = 0.8
 
     applied = env.apply_action(action)
 
@@ -158,7 +169,13 @@ def test_apply_action_rejects_bad_shape_and_non_finite():
 
 
 def test_apply_action_enforces_final_safety_limits():
-    env = make_env(safety=XTrainerSafetyConfig(max_joint_delta_rad=0.1, max_gripper_delta=0.05))
+    env = make_env(
+        safety=XTrainerSafetyConfig(
+            max_joint_delta_rad=0.1,
+            max_gripper_delta=0.05,
+            joint_position_limit_rad=(-100.0, 100.0),
+        )
+    )
     env.reset()
     action = np.full(14, 100.0, dtype=np.float32)
 
@@ -186,12 +203,15 @@ def test_gripper_update_threshold_skips_small_changes():
 def test_close_is_idempotent_and_cleans_all_resources():
     env = make_env()
     env.reset()
+    env.enable_arms()
 
     env.close()
     env.close()
 
     assert env.left_arm.closed
     assert env.right_arm.closed
+    assert env.left_arm.disabled
+    assert env.right_arm.disabled
     assert env.left_gripper.closed
     assert env.right_gripper.closed
     assert all(camera.closed for camera in env.cameras.values())
@@ -227,6 +247,42 @@ def test_partial_connection_failure_closes_opened_resources():
     assert env.cameras["top"].closed
 
 
+def test_partial_arm_enable_failure_disables_already_enabled_arm():
+    env = make_env()
+    env.reset()
+
+    def fail_enable():
+        raise RuntimeError("right arm enable failed")
+
+    env.right_arm.enable = fail_enable
+
+    with pytest.raises(RuntimeError, match="right arm enable failed"):
+        env.enable_arms()
+
+    assert env.left_arm.disabled
+    assert env._enabled_arms == []
+
+
+def test_close_failure_does_not_skip_other_resource_cleanup():
+    env = make_env()
+    env.reset()
+    env.enable_arms()
+
+    def fail_close():
+        raise RuntimeError("camera close failed")
+
+    env.cameras["top"].close = fail_close
+
+    env.close()
+
+    assert env.left_arm.disabled
+    assert env.right_arm.disabled
+    assert env.left_arm.closed
+    assert env.right_arm.closed
+    assert env.left_gripper.closed
+    assert env.right_gripper.closed
+
+
 def test_smooth_reset_steps_with_control_period():
     sleeps = []
     env = make_env(sleep_fn=sleeps.append, safety=XTrainerSafetyConfig(ramp_step_rad=0.5, ramp_max_steps=20))
@@ -238,3 +294,13 @@ def test_smooth_reset_steps_with_control_period():
 
     assert len(env.left_arm.commands) > 1
     assert all(seconds == pytest.approx(1 / 20) for seconds in sleeps)
+
+
+def test_apply_action_can_defer_pacing_to_external_control_loop():
+    sleeps = []
+    env = make_env(sleep_fn=sleeps.append)
+    env.reset()
+
+    env.apply_action(env._last_state, pace=False)
+
+    assert sleeps == []

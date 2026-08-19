@@ -6,6 +6,7 @@ stays outside LeRobot's global Robot factory for the first deployment version.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,6 +23,7 @@ TOP_IMAGE_KEY = "observation.images.top"
 LEFT_WRIST_IMAGE_KEY = "observation.images.left_wrist"
 RIGHT_WRIST_IMAGE_KEY = "observation.images.right_wrist"
 IMAGE_KEYS = (TOP_IMAGE_KEY, LEFT_WRIST_IMAGE_KEY, RIGHT_WRIST_IMAGE_KEY)
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class XTrainerRealEnvironment:
     sleep_fn: Any = time.sleep
     _last_state: np.ndarray | None = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+    _enabled_arms: list[Any] = field(default_factory=list, init=False, repr=False)
 
     def reset(self) -> dict[str, Any]:
         self._closed = False
@@ -64,7 +67,13 @@ class XTrainerRealEnvironment:
         self._last_state = state.copy()
         return {STATE_KEY: state, **camera_observations, TASK_KEY: self.task}
 
-    def apply_action(self, action: Any) -> np.ndarray:
+    def apply_action(self, action: Any, *, pace: bool = True) -> np.ndarray:
+        """Validate, limit, and send one action.
+
+        ``pace=False`` lets an external control loop own the monotonic deadline.
+        Smooth reset keeps the default pacing so its interpolation remains safe.
+        """
+
         action = self._validate_action(action)
         if self._last_state is None:
             self._last_state = self._read_state()
@@ -74,14 +83,46 @@ class XTrainerRealEnvironment:
         self.right_arm.move_joints(limited[7:13])
         self._write_gripper_if_needed(self.left_gripper, limited[6], self._last_state[6])
         self._write_gripper_if_needed(self.right_gripper, limited[13], self._last_state[13])
-        self._sleep_control_period()
+        if pace:
+            self._sleep_control_period()
         self._last_state = limited.copy()
         return limited
+
+    def enable_arms(self) -> None:
+        """Enable both arms as one fail-closed operation.
+
+        Connecting the environment never enables motion by itself. The real
+        runner must call this method only after an explicit execute decision.
+        """
+
+        if self._enabled_arms:
+            return
+        enabled: list[Any] = []
+        try:
+            for arm in (self.left_arm, self.right_arm):
+                enable = getattr(arm, "enable", None)
+                if not callable(enable):
+                    raise TypeError("X-trainer arm does not provide enable()")
+                enable()
+                enabled.append(arm)
+        except BaseException:
+            for arm in reversed(enabled):
+                self._disable_arm(arm)
+            raise
+        self._enabled_arms = enabled
+
+    def disable_arms(self) -> None:
+        """Best-effort arm disable used by normal and exceptional cleanup."""
+
+        enabled, self._enabled_arms = self._enabled_arms, []
+        for arm in reversed(enabled):
+            self._disable_arm(arm)
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self.disable_arms()
         for resource in [
             *self.cameras.values(),
             self.left_gripper,
@@ -89,9 +130,7 @@ class XTrainerRealEnvironment:
             self.left_arm,
             self.right_arm,
         ]:
-            close = getattr(resource, "close", None)
-            if callable(close):
-                close()
+            self._close_resource(resource)
 
     def _connect_all(self) -> None:
         opened: list[Any] = []
@@ -110,10 +149,28 @@ class XTrainerRealEnvironment:
                     opened.append(resource)
         except BaseException:
             for resource in reversed(opened):
-                close = getattr(resource, "close", None)
-                if callable(close):
-                    close()
+                self._close_resource(resource)
             raise
+
+    @staticmethod
+    def _close_resource(resource: Any) -> None:
+        close = getattr(resource, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception:
+            _LOGGER.warning("Failed to close X-trainer resource %r", resource, exc_info=True)
+
+    @staticmethod
+    def _disable_arm(arm: Any) -> None:
+        disable = getattr(arm, "disable", None)
+        if not callable(disable):
+            return
+        try:
+            disable()
+        except Exception:
+            _LOGGER.warning("Failed to disable X-trainer arm %r", arm, exc_info=True)
 
     def _read_state(self) -> np.ndarray:
         left = np.asarray(self.left_arm.read_joints(), dtype=np.float64)
