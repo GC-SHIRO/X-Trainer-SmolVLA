@@ -36,7 +36,8 @@ CUDA 环境；CPU 模式不适合实际训练，也不建议用于有实时性�
 
 ## 下载基础模型权重
 
-安装环境后，可以选择 Hugging Face 或 ModelScope，把默认的 `lerobot/smolvla_base` 提前下载到本地：
+安装环境后，可以选择 Hugging Face 或 ModelScope。下载脚本会同时下载策略 `lerobot/smolvla_base` 和训练时必需的
+视觉语言骨干 `SmolVLM2-500M-Video-Instruct`：
 
 ```bash
 # Hugging Face
@@ -46,13 +47,12 @@ bash tools/download_smolvla_weights_hf.sh
 bash tools/download_smolvla_weights_modelscope.sh
 ```
 
-默认保存目录为 `models/smolvla_base`。离线训练时，将训练配置中的 `policy.path` 改为该本地目录；离线部署时，
-把它传给 `serve_policy.py --checkpoint models/smolvla_base`。自定义模型 ID、保存目录、revision 和 Conda 环境名的
-方法见 [`tools/README.md`](../tools/README.md)。LoRA adapter 只包含增量参数，因此部署 LoRA 前也必须准备基础模型。
+默认目录为 `models/smolvla_base` 和 `models/smolvlm2_500m_video_instruct`。离线部署时，将前者传给
+`serve_policy.py --checkpoint models/smolvla_base`。自定义模型 ID、保存目录、revision 和 Conda 环境名的方法见
+[`tools/README.md`](../tools/README.md)。LoRA adapter 只包含增量参数，因此部署 LoRA 前也必须准备基础模型。
 
-全量训练和 LoRA 启动脚本会在新训练时自动检查 `models/smolvla_base/config.json`。该文件由两个下载脚本的默认
-目录生成；存在时，脚本优先从本地加载，不会访问 Hugging Face。断点续训不会使用这个自动覆盖，始终以 checkpoint
-保存的策略配置为准。
+全量训练和 LoRA 启动脚本会在新训练时自动检查两个目录中的 `config.json`。文件存在时，脚本会同时传入本地策略和
+本地 VLM 骨干路径，不会访问 Hugging Face。断点续训不会使用这个自动覆盖，始终以 checkpoint 保存的策略配置为准。
 
 ## 数据集目录与契约
 

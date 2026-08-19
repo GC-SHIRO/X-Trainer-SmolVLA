@@ -82,8 +82,8 @@ conda activate xtrainer-dev
 
 ## 下载 SmolVLA 模型权重
 
-完成环境安装后，从 Hugging Face 或 ModelScope 中选择一个下载入口即可。两个脚本默认都把基础模型保存到
-`models/smolvla_base`，不需要重复下载。
+完成环境安装后，从 Hugging Face 或 ModelScope 中选择一个下载入口即可。两个脚本都会下载策略和 VLM 骨干，
+默认分别保存到 `models/smolvla_base` 和 `models/smolvlm2_500m_video_instruct`，不需要重复下载。
 
 Hugging Face 版本：
 
@@ -103,7 +103,8 @@ ModelScope 版本：
 bash tools/download_smolvla_weights_modelscope.sh
 ```
 
-两个版本默认下载 `lerobot/smolvla_base`。已有文件会被复用，下载中断后可以再次执行相同命令。
+两个版本默认下载 `lerobot/smolvla_base` 和 `HuggingFaceTB/SmolVLM2-500M-Video-Instruct`。已有文件会被复用，
+下载中断后可以再次执行相同命令。
 
 Hugging Face 自定义模型、保存位置或固定 revision：
 

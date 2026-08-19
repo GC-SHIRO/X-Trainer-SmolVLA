@@ -3,21 +3,25 @@ set -Eeuo pipefail
 
 ENV_NAME="xtrainer-smolvla"
 MODEL_ID="lerobot/smolvla_base"
+VLM_MODEL_ID="HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
 REVISION=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OUTPUT_DIR="${REPO_ROOT}/models/smolvla_base"
+VLM_OUTPUT_DIR="${REPO_ROOT}/models/smolvlm2_500m_video_instruct"
 
 usage() {
   cat <<'USAGE'
 Usage: bash tools/download_smolvla_weights_modelscope.sh [OPTIONS]
 
-Download a SmolVLA model snapshot from ModelScope.
+Download the SmolVLA policy and its VLM backbone from ModelScope.
 
 Options:
   --model-id ID         ModelScope model ID (default: lerobot/smolvla_base)
   --output-dir PATH     Local model directory (default: models/smolvla_base)
+  --vlm-model-id ID     VLM model ID (default: HuggingFaceTB/SmolVLM2-500M-Video-Instruct)
+  --vlm-output-dir PATH Local VLM directory (default: models/smolvlm2_500m_video_instruct)
   --revision REVISION   Optional branch, tag, or commit ID
   --env-name NAME       Conda environment name (default: xtrainer-smolvla)
   -h, --help            Show this help
@@ -31,6 +35,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --model-id) MODEL_ID="${2:?--model-id requires a value}"; shift 2 ;;
     --output-dir) OUTPUT_DIR="${2:?--output-dir requires a value}"; shift 2 ;;
+    --vlm-model-id) VLM_MODEL_ID="${2:?--vlm-model-id requires a value}"; shift 2 ;;
+    --vlm-output-dir) VLM_OUTPUT_DIR="${2:?--vlm-output-dir requires a value}"; shift 2 ;;
     --revision) REVISION="${2:?--revision requires a value}"; shift 2 ;;
     --env-name) ENV_NAME="${2:?--env-name requires a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -44,30 +50,33 @@ done
 }
 command -v conda >/dev/null 2>&1 || { printf 'ERROR: conda was not found\n' >&2; exit 1; }
 
-mkdir -p "${OUTPUT_DIR}"
-printf '[xtrainer-download-modelscope] model: %s\n' "${MODEL_ID}"
-printf '[xtrainer-download-modelscope] destination: %s\n' "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}" "${VLM_OUTPUT_DIR}"
+printf '[xtrainer-download-modelscope] policy: %s\n' "${MODEL_ID}"
+printf '[xtrainer-download-modelscope] VLM: %s\n' "${VLM_MODEL_ID}"
+printf '[xtrainer-download-modelscope] policy destination: %s\n' "${OUTPUT_DIR}"
+printf '[xtrainer-download-modelscope] VLM destination: %s\n' "${VLM_OUTPUT_DIR}"
 
 conda run --no-capture-output -n "${ENV_NAME}" \
-  python - "${MODEL_ID}" "${OUTPUT_DIR}" "${REVISION}" <<'PY'
+  python - "${MODEL_ID}" "${OUTPUT_DIR}" "${VLM_MODEL_ID}" "${VLM_OUTPUT_DIR}" "${REVISION}" <<'PY'
 import os
 import sys
 
 from modelscope import snapshot_download
 
-model_id, output_dir, revision = sys.argv[1:]
+policy_model_id, policy_dir, vlm_model_id, vlm_dir, revision = sys.argv[1:]
 token = os.environ.get("MODELSCOPE_API_TOKEN")
 if token:
     from modelscope.hub.api import HubApi
 
     HubApi().login(token)
 
-downloaded_path = snapshot_download(
-    model_id=model_id,
-    revision=revision or None,
-    local_dir=output_dir,
-)
-print(f"model download complete: {downloaded_path}")
+for model_id, output_dir in ((policy_model_id, policy_dir), (vlm_model_id, vlm_dir)):
+    downloaded_path = snapshot_download(
+        model_id=model_id,
+        revision=revision or None,
+        local_dir=output_dir,
+    )
+    print(f"model download complete: {downloaded_path}")
 PY
 
 printf '[xtrainer-download-modelscope] deployment checkpoint: %s\n' "${OUTPUT_DIR}"

@@ -9,6 +9,7 @@ TRAIN_CONFIG="${XTRAINER_TRAIN_CONFIG:-${REPO_ROOT}/configs/xtrainer/train_smolv
 TRAINING_DESCRIPTION="${XTRAINER_TRAINING_DESCRIPTION:-SmolVLA 全量微调}"
 VALIDATOR="${SCRIPT_DIR}/validate_dataset_v21.py"
 LOCAL_POLICY_PATH="${REPO_ROOT}/models/smolvla_base"
+LOCAL_VLM_PATH="${REPO_ROOT}/models/smolvlm2_500m_video_instruct"
 
 DATASET_ROOT=""
 OUTPUT_DIR=""
@@ -131,6 +132,10 @@ else
     if [[ -f "${LOCAL_POLICY_PATH}/config.json" ]]; then
         echo "using local SmolVLA weights: ${LOCAL_POLICY_PATH}"
         train_args+=("--policy.path=$LOCAL_POLICY_PATH")
+    fi
+    if [[ -f "${LOCAL_VLM_PATH}/config.json" ]]; then
+        echo "using local SmolVLM2 weights: ${LOCAL_VLM_PATH}"
+        train_args+=("--policy.vlm_model_name=$LOCAL_VLM_PATH")
     fi
 fi
 train_args+=("--dataset.root=$DATASET_ROOT")
