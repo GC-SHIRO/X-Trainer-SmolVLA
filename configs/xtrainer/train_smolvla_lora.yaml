@@ -15,6 +15,7 @@ policy:
   max_action_dim: 32
   resize_imgs_with_padding: [512, 512]
   load_vlm_weights: true
+  push_to_hub: false
 
 peft:
   method_type: LORA

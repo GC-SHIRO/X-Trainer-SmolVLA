@@ -103,6 +103,8 @@ bash scripts/xtrainer/train_smolvla.sh \
 
 `--device` 会覆盖策略的运行设备，可设为 `cuda`、`cuda:0` 或 `cpu`。即使基础模型路径由 YAML 的
 `policy.path` 指定，也可以正常传入该参数；策略配置会在加载基础模型时再应用此覆盖值。
+X-trainer 的全量与 LoRA 配置默认 `push_to_hub: false`，训练 checkpoint 仅写入本地 `outputs/`，无需提供
+Hugging Face `repo_id`。
 
 使用 `--help` 查看启动脚本帮助。脚本会拒绝缺失或不存在的数据集目录；只有在数据集已校验且明确需要
 跳过只读预检时，才使用 `--skip-validation`。
