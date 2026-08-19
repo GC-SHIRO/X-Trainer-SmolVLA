@@ -3,6 +3,13 @@ import asyncio
 import numpy as np
 import pytest
 
+from deploy.xtrainer import (
+    ProtocolError as PublicProtocolError,
+    XTrainerWebSocketPolicyClient as PublicXTrainerWebSocketPolicyClient,
+    XTrainerWebSocketPolicyServer as PublicXTrainerWebSocketPolicyServer,
+    dumps as public_dumps,
+    loads as public_loads,
+)
 from deploy.xtrainer.msgpack_numpy import ProtocolError, dumps, loads
 from deploy.xtrainer.websocket_client_policy import XTrainerWebSocketPolicyClient
 from deploy.xtrainer.websocket_policy_server import XTrainerWebSocketPolicyServer
@@ -27,6 +34,14 @@ class EchoPolicy:
 
     def infer(self, payload):
         return {"action": payload["state"].astype(np.float32) + 1.0}
+
+
+def test_package_exports_transport_contract():
+    assert PublicProtocolError is ProtocolError
+    assert PublicXTrainerWebSocketPolicyClient is XTrainerWebSocketPolicyClient
+    assert PublicXTrainerWebSocketPolicyServer is XTrainerWebSocketPolicyServer
+    assert public_dumps is dumps
+    assert public_loads is loads
 
 
 def test_numpy_msgpack_roundtrip_preserves_dtype_and_shape():
