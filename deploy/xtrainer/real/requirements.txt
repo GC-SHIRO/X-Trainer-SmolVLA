@@ -1,0 +1,4 @@
+# Optional runtime dependencies for real X-trainer hardware hosts.
+# These are intentionally not required by training or policy-serving imports.
+pyrealsense2>=2.55.1.6486
+feetech-servo-sdk>=1.0.0,<2.0.0
