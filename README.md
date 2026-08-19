@@ -128,6 +128,11 @@ lerobot-eval \
 
 Learn how to implement your own simulation environment or benchmark and distribute it from the HF Hub by following the [EnvHub Documentation](https://huggingface.co/docs/lerobot/envhub).
 
+### X-trainer SmolVLA
+
+For the X-trainer dual-arm setup, see the [training, Mock integration, and real-robot deployment guide](./docs/XTRAINER_SMOLVLA.md).
+Ubuntu 24.04 Conda environment installation is documented in [`tools/README.md`](./tools/README.md).
+
 ### Third-Party Hardware
 
 Beyond the natively supported hardware, the community maintains a growing ecosystem of plugins for other robots, teleoperators, cameras, and sensors - UFACTORY xArm, Universal Robots UR5e, Franka, AgileX Piper, Trossen WidowX, ARX5, I2RT YAM, GELLO, SpaceMouse, Meta Quest, ROS 2 bridges, tactile and depth cameras, and more.
