@@ -21,24 +21,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from deploy.xtrainer.smolvla_policy import SmolVLAXTrainerPolicy
 from deploy.xtrainer.websocket_policy_server import XTrainerWebSocketPolicyServer
+from deploy.xtrainer.real.constants import XTRAINER_RESET_POSE
 
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "xtrainer" / "deploy.yaml"
-XTRAINER_RESET_POSE = (
-    -1.57,
-    0.0,
-    -1.57,
-    0.0,
-    1.57,
-    1.57,
-    1.0,
-    1.57,
-    0.0,
-    1.57,
-    0.0,
-    -1.57,
-    -1.57,
-    1.0,
-)
 
 
 def parse_args() -> argparse.Namespace:
