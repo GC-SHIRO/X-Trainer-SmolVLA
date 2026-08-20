@@ -17,6 +17,7 @@ from scripts.xtrainer.run_real import (
     _extract_action_chunk,
     _merge_action_queue,
     _rate_limit_action,
+    _should_prefetch,
     parse_args,
     run,
     run_control_loop,
@@ -168,6 +169,38 @@ def test_cli_uses_planned_camera_defaults_and_reserved_switch():
     assert args.prefetch_threshold == pytest.approx(0.7)
     assert args.observation_similarity_epsilon is None
     assert args.execute is False
+
+
+def test_cli_accepts_reference_hardware_option_names_and_prefetch_remaining():
+    args = parse_args(
+        [
+            "--host",
+            "127.0.0.1",
+            "--left-arm-ip",
+            "192.168.5.11",
+            "--right-arm-ip",
+            "192.168.5.12",
+            "--top-camera-serial",
+            "top",
+            "--left-wrist-camera-serial",
+            "left",
+            "--right-wrist-camera-serial",
+            "right",
+            "--prefetch-remaining",
+            "2",
+        ]
+    )
+
+    assert args.left_robot_ip == "192.168.5.11"
+    assert args.right_robot_ip == "192.168.5.12"
+    assert (args.camera_top_serial, args.camera_left_wrist_serial, args.camera_right_wrist_serial) == (
+        "top",
+        "left",
+        "right",
+    )
+    assert args.prefetch_remaining == 2
+    assert _should_prefetch(2, 5, 0.7, args.prefetch_remaining)
+    assert not _should_prefetch(3, 5, 0.7, args.prefetch_remaining)
 
 
 def test_control_loop_blends_returned_prefetch_and_keeps_one_request_in_flight():

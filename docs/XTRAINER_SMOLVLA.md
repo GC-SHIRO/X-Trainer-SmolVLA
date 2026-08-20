@@ -328,13 +328,13 @@ python scripts/xtrainer/run_real.py \
   --host 192.168.1.100 \
   --port 8000 \
   --task "将桌面上的方块放入收纳盒" \
-  --left-arm-ip 192.168.5.1 \
-  --right-arm-ip 192.168.5.2 \
+  --left-robot-ip 192.168.5.1 \
+  --right-robot-ip 192.168.5.2 \
   --left-gripper-port /dev/ttyUSB1 \
   --right-gripper-port /dev/ttyUSB0 \
-  --top-camera-serial 409122273405 \
-  --left-wrist-camera-serial 412622272997 \
-  --right-wrist-camera-serial 412622271417 \
+  --camera-top-serial 409122273405 \
+  --camera-left-wrist-serial 412622272997 \
+  --camera-right-wrist-serial 412622271417 \
   --action-horizon 5 \
   --control-hz 10 \
   --max-steps 100 \
@@ -344,9 +344,42 @@ python scripts/xtrainer/run_real.py \
   --execute
 ```
 
+`--host` 是策略服务所在机器的局域网 IP；只有服务和机器人控制程序在同一台机器上运行时才使用
+`127.0.0.1`。以下参数决定首次真机运行的速度和动作范围：
+
+| 参数 | 示例值 | 作用 |
+| --- | --- | --- |
+| `--action-horizon` | `5` | 每次从服务端动作块中实际消费的步数；值小会更频繁地重新观测与请求策略。 |
+| `--control-hz` | `10` | 客户端下发动作频率，`10` 表示约每 100 ms 一步。 |
+| `--max-steps` | `100` | 本次任务最多执行的控制步数；以 10 Hz 运行约为 10 秒。 |
+| `--max-joint-delta` | `0.03` | 单步关节目标相对当前状态的最大变化量，单位为弧度。 |
+| `--max-gripper-delta` | `0.02` | 单步夹爪归一化目标的最大变化量，范围为 `0..1`。 |
+| `--max-delta-per-step` | `0.02` | 对最终准备下发的策略动作再做一次逐维限幅；`<=0` 时关闭。它是额外保护，不替代关节和夹爪限幅。 |
+| `--ramp-step` | 默认 `0.01` | 自动 reset 时每次平滑插值的关节最大变化量，单位为弧度。 |
+| `--ramp-max-steps` | 默认 `100` | 自动 reset 的最多插值步数。 |
+| `--execute` | 必填 | 显式允许机器人使能和下发动作；省略时程序会在连接硬件前拒绝执行。 |
+
+参考仓库的硬件参数别名（`--left-arm-ip`、`--right-arm-ip`、`--top-camera-serial`、
+`--left-wrist-camera-serial`、`--right-wrist-camera-serial`）也可继续使用。预取可用
+`--prefetch-remaining N`（剩余 `N` 步时请求下一块）表达；未设置时沿用
+`--prefetch-threshold` 的比例逻辑。
+
+策略服务端也兼容参考仓库的命名，例如：
+
+```bash
+python scripts/xtrainer/serve_policy.py \
+  --model-path outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model \
+  --device cuda --host 0.0.0.0 --port 8000 --use-length 50
+```
+
+`--use-length 50` 是服务端每次生成的动作数；客户端的 `--action-horizon 5` 仍只会采用其中前
+5 步。因此在 20 Hz 下，`--max-steps 100` 会在约 5 秒后正常结束，不代表推理只成功了两次。
+
 真实策略服务会把 14 维 `reset_pose` 放进 metadata。机器人端会在机械臂使能后，先按照 `--ramp-step` 和
 `--ramp-max-steps` 平滑移动到该姿态，然后才请求模型动作。默认复位姿态来自 X-trainer 部署配置；如果该姿态
 不适合当前工作台、末端工具或关节限位，应先停止部署并修改服务端配置，不能依赖运行时安全阈值替代人工确认。
+首次真实策略运行前，必须先确认 Dobot 能接受该 reset pose；若控制器返回 `-1,{},ServoJ(...)`，立即停止，
+不要通过忽略错误或重复执行命令来继续任务。
 
 确认短流程稳定后，再逐步增加 `--max-steps`、`--action-horizon` 或 `--control-hz`。每次只放宽一项，便于判断
 异常来自模型动作、网络延迟还是硬件控制。

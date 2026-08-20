@@ -117,7 +117,21 @@ def _rate_limit_action(
     return previous + np.clip(target - previous, -max_delta_per_step, max_delta_per_step)
 
 
-def _should_prefetch(queue_size: int, action_horizon: int, threshold: float) -> bool:
+def _should_prefetch(
+    queue_size: int,
+    action_horizon: int,
+    threshold: float,
+    remaining: int | None = None,
+) -> bool:
+    """Return whether to request the next chunk.
+
+    ``remaining`` is the reference repository's more explicit prefetch
+    setting.  When omitted, retain the existing fractional-threshold
+    behaviour so current launch commands do not change their timing.
+    """
+
+    if remaining is not None:
+        return queue_size <= remaining
     return threshold > 0 and queue_size / action_horizon <= threshold
 
 
@@ -142,8 +156,18 @@ async def _request_action_chunk(
     request_timeout_s: float,
 ) -> InferenceResult:
     response = await asyncio.wait_for(policy.infer(_policy_payload(observation)), timeout=request_timeout_s)
+    selected_actions = _extract_action_chunk(response, action_horizon)
+    raw_actions = np.asarray(response["action"])
+    returned_count = 1 if raw_actions.ndim == 1 else raw_actions.shape[0]
+    _LOGGER.info(
+        "Policy inference for observation step %d returned %d actions; client retained %d (action horizon=%d)",
+        observation_timestep,
+        returned_count,
+        len(selected_actions),
+        action_horizon,
+    )
     return InferenceResult(
-        actions=_extract_action_chunk(response, action_horizon),
+        actions=selected_actions,
         observation_timestep=observation_timestep,
     )
 
@@ -156,6 +180,7 @@ async def run_control_loop(
     control_hz: float,
     max_steps: int,
     prefetch_threshold: float,
+    prefetch_remaining: int | None = None,
     request_timeout_s: float,
     max_delta_per_step: float,
     monotonic_fn: Any = time.monotonic,
@@ -169,6 +194,11 @@ async def run_control_loop(
         request_timeout_s=request_timeout_s,
     )
     action_queue = _merge_action_queue({}, initial_result, current_timestep=0)
+    _LOGGER.info(
+        "Initial inference returned %d actions; client action horizon is %d",
+        len(initial_result.actions),
+        action_horizon,
+    )
     last_sent_action: np.ndarray | None = None
     pending_request: asyncio.Task[InferenceResult] | None = None
     period = 1.0 / control_hz
@@ -180,6 +210,12 @@ async def run_control_loop(
                 completed_request, pending_request = pending_request, None
                 result = completed_request.result()
                 action_queue = _merge_action_queue(action_queue, result, current_timestep=step)
+                _LOGGER.info(
+                    "Received prefetched chunk of %d actions at control step %d (queue=%d)",
+                    len(result.actions),
+                    step,
+                    len(action_queue),
+                )
 
             timed_action = action_queue.pop(step, None)
             if timed_action is None:
@@ -187,6 +223,7 @@ async def run_control_loop(
                     raise RuntimeError(f"No action available for timestep {step}")
                 action = last_sent_action.copy()
                 if pending_request is None:
+                    _LOGGER.info("Action queue exhausted at step %d; requesting a replacement chunk", step)
                     pending_request = asyncio.create_task(
                         _request_action_chunk(
                             policy,
@@ -204,9 +241,17 @@ async def run_control_loop(
             last_sent_action = np.asarray(applied_action, dtype=np.float64).copy()
 
             if pending_request is None and _should_prefetch(
-                len(action_queue), action_horizon, prefetch_threshold
+                len(action_queue),
+                action_horizon,
+                prefetch_threshold,
+                prefetch_remaining,
             ):
                 observation_timestep = step + 1
+                _LOGGER.info(
+                    "Requesting prefetch at control step %d (remaining actions=%d)",
+                    step,
+                    len(action_queue),
+                )
                 pending_request = asyncio.create_task(
                     _request_action_chunk(
                         policy,
@@ -223,6 +268,7 @@ async def run_control_loop(
                 await sleep_fn(remaining)
             else:
                 deadline = monotonic_fn()
+        _LOGGER.info("Reached --max-steps=%d; ending the control loop", max_steps)
     finally:
         if pending_request is not None:
             pending_request.cancel()
@@ -304,15 +350,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--action-horizon", type=int, default=50)
     parser.add_argument("--control-hz", type=float, default=20.0)
     parser.add_argument("--max-steps", type=int, default=1000)
-    parser.add_argument("--left-robot-ip", default="192.168.5.1")
-    parser.add_argument("--right-robot-ip", default="192.168.5.2")
+    parser.add_argument(
+        "--left-robot-ip", "--left-arm-ip", dest="left_robot_ip", default="192.168.5.1"
+    )
+    parser.add_argument(
+        "--right-robot-ip", "--right-arm-ip", dest="right_robot_ip", default="192.168.5.2"
+    )
     parser.add_argument("--left-gripper-port", default="/dev/ttyUSB1")
     parser.add_argument("--right-gripper-port", default="/dev/ttyUSB0")
     parser.add_argument("--left-gripper-id", type=int, default=21)
     parser.add_argument("--right-gripper-id", type=int, default=22)
-    parser.add_argument("--camera-top-serial", default=TOP_CAMERA_SERIAL)
-    parser.add_argument("--camera-left-wrist-serial", default=LEFT_WRIST_CAMERA_SERIAL)
-    parser.add_argument("--camera-right-wrist-serial", default=RIGHT_WRIST_CAMERA_SERIAL)
+    parser.add_argument(
+        "--camera-top-serial", "--top-camera-serial", dest="camera_top_serial", default=TOP_CAMERA_SERIAL
+    )
+    parser.add_argument(
+        "--camera-left-wrist-serial",
+        "--left-wrist-camera-serial",
+        dest="camera_left_wrist_serial",
+        default=LEFT_WRIST_CAMERA_SERIAL,
+    )
+    parser.add_argument(
+        "--camera-right-wrist-serial",
+        "--right-wrist-camera-serial",
+        dest="camera_right_wrist_serial",
+        default=RIGHT_WRIST_CAMERA_SERIAL,
+    )
     parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
@@ -323,6 +385,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ramp-max-steps", type=int, default=100)
     parser.add_argument("--gripper-update-threshold", type=float, default=0.02)
     parser.add_argument("--prefetch-threshold", type=float, default=0.7)
+    parser.add_argument(
+        "--prefetch-remaining",
+        type=int,
+        default=None,
+        help=(
+            "Request the next chunk when this many actions remain (compatible with the reference "
+            "launcher; overrides --prefetch-threshold when supplied)"
+        ),
+    )
     parser.add_argument("--request-timeout", type=float, default=10.0)
     parser.add_argument(
         "--max-delta-per-step",
@@ -360,6 +431,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(f"Expected positive values for: {', '.join(invalid)}")
     if not 0 <= args.prefetch_threshold <= 1:
         raise ValueError("prefetch_threshold must be in [0, 1]")
+    if args.prefetch_remaining is not None and args.prefetch_remaining < 0:
+        raise ValueError("prefetch_remaining must be non-negative")
     non_negative_values = {
         "camera_warmup_frames": args.camera_warmup_frames,
         "max_joint_delta": args.max_joint_delta,
@@ -407,6 +480,7 @@ async def run(
             control_hz=args.control_hz,
             max_steps=args.max_steps,
             prefetch_threshold=args.prefetch_threshold,
+            prefetch_remaining=args.prefetch_remaining,
             request_timeout_s=args.request_timeout,
             max_delta_per_step=args.max_delta_per_step,
         )

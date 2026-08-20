@@ -26,16 +26,30 @@ from deploy.xtrainer.real.constants import XTRAINER_RESET_POSE
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "xtrainer" / "deploy.yaml"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve a SmolVLA checkpoint for X-trainer")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to deploy.yaml")
-    parser.add_argument("--checkpoint", default=None, help="Override policy.checkpoint")
+    parser.add_argument(
+        "--checkpoint",
+        "--model-path",
+        dest="checkpoint",
+        default=None,
+        help="Override policy.checkpoint (--model-path is compatible with the reference launcher)",
+    )
     parser.add_argument("--lora-adapter", default=None, help="Override policy.lora_adapter")
     parser.add_argument("--device", default=None, help="Override policy.device")
     parser.add_argument("--host", default=None, help="Override network.host")
     parser.add_argument("--port", type=int, default=None, help="Override network.port")
+    parser.add_argument(
+        "--actions-per-chunk",
+        "--use-length",
+        dest="actions_per_chunk",
+        type=int,
+        default=None,
+        help="Actions returned per inference (the reference launcher calls this --use-length)",
+    )
     parser.add_argument("--no-warmup", action="store_true", help="Skip the startup warmup inference")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def load_deploy_config(path: str) -> dict:
@@ -56,6 +70,11 @@ def main() -> None:
     device = args.device or policy_cfg.get("device", "cuda")
     host = args.host or network_cfg.get("host", "0.0.0.0")
     port = args.port if args.port is not None else network_cfg.get("port", 8000)
+    actions_per_chunk = args.actions_per_chunk or policy_cfg.get(
+        "actions_per_chunk", xtrainer_cfg.get("chunk_size", 50)
+    )
+    if actions_per_chunk <= 0:
+        raise ValueError("actions_per_chunk must be positive")
 
     observation_keys = xtrainer_cfg["observation_keys"]
     camera_keys = observation_keys["images"]
@@ -64,7 +83,7 @@ def main() -> None:
         checkpoint=checkpoint,
         lora_adapter=lora_adapter,
         device=device,
-        actions_per_chunk=policy_cfg.get("actions_per_chunk", xtrainer_cfg.get("chunk_size", 50)),
+        actions_per_chunk=actions_per_chunk,
         camera_keys=camera_keys,
         state_key=observation_keys.get("state", "observation.state"),
         action_key=xtrainer_cfg.get("action_key", "action"),
@@ -79,7 +98,13 @@ def main() -> None:
         max_payload_bytes=int(network_cfg.get("max_payload_mb", 64)) * 1024 * 1024,
     )
 
-    logging.info("Serving SmolVLA policy on %s:%d (checkpoint=%s)", host, port, checkpoint)
+    logging.info(
+        "Serving SmolVLA policy on %s:%d (checkpoint=%s, actions_per_chunk=%d)",
+        host,
+        port,
+        checkpoint,
+        actions_per_chunk,
+    )
     asyncio.run(_serve_forever(server))
 
 
