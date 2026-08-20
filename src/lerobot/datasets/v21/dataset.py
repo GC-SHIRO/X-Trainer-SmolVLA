@@ -133,6 +133,8 @@ class LeRobotDatasetV21(Dataset):
     @staticmethod
     def _tensor(value: Any) -> torch.Tensor:
         array = np.asarray(value)
+        if np.issubdtype(array.dtype, np.floating):
+            array = array.astype(np.float32, copy=False)
         if not array.flags.writeable:
             array = array.copy()
         return torch.as_tensor(array)
