@@ -290,15 +290,33 @@ def make_dataloaders(
         # BatchSamplerShard without needing a `generator` attribute to synchronize an RNG, and
         # resume is sample-exact.
         shuffle = False
-        sampler = EpisodeAwareSampler(
-            dataset.meta.episodes["dataset_from_index"],
-            dataset.meta.episodes["dataset_to_index"],
-            episode_indices_to_use=dataset.episodes,
-            drop_n_last_frames=getattr(active_cfg, "drop_n_last_frames", 0),
-            shuffle=True,
-            seed=cfg.seed if cfg.seed is not None else 0,
-            absolute_to_relative_idx=dataset.absolute_to_relative_idx,
-        )
+        if isinstance(dataset.meta.episodes, list):
+            # The v2.1 adapter stores episode metadata as a list. Its dataset
+            # indexes are already relative to the selected episode sequence.
+            episode_by_index = {episode["episode_index"]: episode for episode in dataset.meta.episodes}
+            from_indices, to_indices = [], []
+            frame_index = 0
+            for episode_index in dataset.episodes:
+                from_indices.append(frame_index)
+                frame_index += episode_by_index[episode_index]["length"]
+                to_indices.append(frame_index)
+            sampler = EpisodeAwareSampler(
+                from_indices,
+                to_indices,
+                drop_n_last_frames=getattr(active_cfg, "drop_n_last_frames", 0),
+                shuffle=True,
+                seed=cfg.seed if cfg.seed is not None else 0,
+            )
+        else:
+            sampler = EpisodeAwareSampler(
+                dataset.meta.episodes["dataset_from_index"],
+                dataset.meta.episodes["dataset_to_index"],
+                episode_indices_to_use=dataset.episodes,
+                drop_n_last_frames=getattr(active_cfg, "drop_n_last_frames", 0),
+                shuffle=True,
+                seed=cfg.seed if cfg.seed is not None else 0,
+                absolute_to_relative_idx=dataset.absolute_to_relative_idx,
+            )
         if cfg.resume and step > 0:
             # The resume offset depends on the (dp_world_size, batch_size) that produced `step`,
             # so use the values recorded in the checkpoint (falling back to the current ones for
