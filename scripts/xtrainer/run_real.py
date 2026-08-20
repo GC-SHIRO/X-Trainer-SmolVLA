@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,7 @@ from deploy.xtrainer.websocket_client_policy import XTrainerWebSocketPolicyClien
 ACTION_DIM = 14
 OLD_ACTION_WEIGHT = 0.3
 NEW_ACTION_WEIGHT = 0.7
+DEFAULT_CONTROL_LOG_DIR = REPO_ROOT / "outputs" / "xtrainer" / "control_logs"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -59,6 +62,59 @@ class TimedAction:
 class InferenceResult:
     actions: np.ndarray
     observation_timestep: int
+
+
+class ControlActionLog:
+    """Optional JSONL trace of the client-side policy/control boundary.
+
+    The server log deliberately contains only raw action chunks. This trace
+    makes it possible to compare those chunks with the state sent by the
+    client, the action selected from the queue, and the action ultimately
+    accepted by the real-environment safety layer. Images are intentionally
+    omitted so the trace remains small and easy to share.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.path.open("w", encoding="utf-8", buffering=1)
+        self._sequence = 0
+        self._closed = False
+
+    def write(self, event: str, **fields: Any) -> None:
+        """Append one trace record without risking the live control loop."""
+
+        if self._closed:
+            return
+        record = {
+            "event": event,
+            "sequence": self._sequence,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            **fields,
+        }
+        self._sequence += 1
+        try:
+            self._file.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+        except (OSError, TypeError, ValueError):
+            # A full disk or malformed diagnostic record must not stop a
+            # moving robot. Disable only the optional trace and retain the
+            # exception in the normal application log.
+            _LOGGER.exception("Disabling client control log after a write failure: %s", self.path)
+            self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._file.close()
+        except OSError:
+            _LOGGER.exception("Could not close client control log: %s", self.path)
+
+
+def _default_control_log_path() -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return DEFAULT_CONTROL_LOG_DIR / f"control_{timestamp}.jsonl"
 
 
 def _extract_action_chunk(response: dict[str, Any], action_horizon: int) -> np.ndarray:
@@ -154,11 +210,27 @@ async def _request_action_chunk(
     action_horizon: int,
     observation_timestep: int,
     request_timeout_s: float,
+    control_log: ControlActionLog | None = None,
 ) -> InferenceResult:
-    response = await asyncio.wait_for(policy.infer(_policy_payload(observation)), timeout=request_timeout_s)
+    payload = _policy_payload(observation)
+    if control_log is not None:
+        control_log.write(
+            "inference_request",
+            observation_timestep=observation_timestep,
+            state=np.asarray(payload["state"], dtype=np.float64).tolist(),
+            task=str(payload["task"]),
+        )
+    response = await asyncio.wait_for(policy.infer(payload), timeout=request_timeout_s)
     selected_actions = _extract_action_chunk(response, action_horizon)
     raw_actions = np.asarray(response["action"])
     returned_count = 1 if raw_actions.ndim == 1 else raw_actions.shape[0]
+    if control_log is not None:
+        control_log.write(
+            "inference_response",
+            observation_timestep=observation_timestep,
+            returned_action_count=int(returned_count),
+            retained_actions=selected_actions.tolist(),
+        )
     _LOGGER.info(
         "Policy inference for observation step %d returned %d actions; client retained %d (action horizon=%d)",
         observation_timestep,
@@ -183,6 +255,7 @@ async def run_control_loop(
     prefetch_remaining: int | None = None,
     request_timeout_s: float,
     max_delta_per_step: float,
+    control_log: ControlActionLog | None = None,
     monotonic_fn: Any = time.monotonic,
     sleep_fn: Any = asyncio.sleep,
 ) -> None:
@@ -192,6 +265,7 @@ async def run_control_loop(
         action_horizon=action_horizon,
         observation_timestep=0,
         request_timeout_s=request_timeout_s,
+        control_log=control_log,
     )
     action_queue = _merge_action_queue({}, initial_result, current_timestep=0)
     _LOGGER.info(
@@ -218,6 +292,7 @@ async def run_control_loop(
                 )
 
             timed_action = action_queue.pop(step, None)
+            used_fallback = timed_action is None
             if timed_action is None:
                 if last_sent_action is None:
                     raise RuntimeError(f"No action available for timestep {step}")
@@ -231,14 +306,30 @@ async def run_control_loop(
                             action_horizon=action_horizon,
                             observation_timestep=step,
                             request_timeout_s=request_timeout_s,
+                            control_log=control_log,
                         )
                     )
             else:
                 action = timed_action.action
 
-            action = _rate_limit_action(action, last_sent_action, max_delta_per_step)
-            applied_action = environment.apply_action(action, pace=False)
+            queued_action = np.asarray(action, dtype=np.float64).copy()
+            rate_limited_action = _rate_limit_action(
+                queued_action, last_sent_action, max_delta_per_step
+            )
+            applied_action = environment.apply_action(rate_limited_action, pace=False)
             last_sent_action = np.asarray(applied_action, dtype=np.float64).copy()
+            if control_log is not None:
+                control_log.write(
+                    "control_step",
+                    control_timestep=step,
+                    source_observation_timestep=(
+                        None if timed_action is None else timed_action.observation_timestep
+                    ),
+                    used_fallback=used_fallback,
+                    queued_action=queued_action.tolist(),
+                    rate_limited_action=rate_limited_action.tolist(),
+                    applied_action=last_sent_action.tolist(),
+                )
 
             if pending_request is None and _should_prefetch(
                 len(action_queue),
@@ -256,9 +347,10 @@ async def run_control_loop(
                     _request_action_chunk(
                         policy,
                         environment.get_observation(),
-                        action_horizon=action_horizon,
-                        observation_timestep=observation_timestep,
-                        request_timeout_s=request_timeout_s,
+                            action_horizon=action_horizon,
+                            observation_timestep=observation_timestep,
+                            request_timeout_s=request_timeout_s,
+                            control_log=control_log,
                     )
                 )
 
@@ -402,6 +494,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Optional final client-side action delta limit; <=0 disables it",
     )
     parser.add_argument(
+        "--log-control",
+        action="store_true",
+        help=(
+            "Write an optional JSONL client trace (state, selected actions, and safety-applied "
+            "actions); disabled by default"
+        ),
+    )
+    parser.add_argument(
+        "--control-log-path",
+        type=Path,
+        default=None,
+        help="Path for --log-control (default: outputs/xtrainer/control_logs/control_<UTC>.jsonl)",
+    )
+    parser.add_argument(
         "--observation-similarity-epsilon",
         type=float,
         default=None,
@@ -461,6 +567,10 @@ async def run(
 
     policy = policy or XTrainerWebSocketPolicyClient(f"http://{args.host}:{args.port}")
     active_environment = environment
+    control_log = None
+    if args.log_control:
+        control_log = ControlActionLog(args.control_log_path or _default_control_log_path())
+        _LOGGER.info("Writing client control trace to %s", control_log.path)
     try:
         metadata = await policy.connect()
         policy_metadata = _validate_server_metadata(metadata)
@@ -483,11 +593,14 @@ async def run(
             prefetch_remaining=args.prefetch_remaining,
             request_timeout_s=args.request_timeout,
             max_delta_per_step=args.max_delta_per_step,
+            control_log=control_log,
         )
     finally:
         if active_environment is not None:
             active_environment.close()
         await policy.close()
+        if control_log is not None:
+            control_log.close()
 
 
 def main() -> None:

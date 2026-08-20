@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import numpy as np
 import pytest
@@ -12,6 +13,7 @@ from deploy.xtrainer.real.environment import (
     TOP_IMAGE_KEY,
 )
 from scripts.xtrainer.run_real import (
+    ControlActionLog,
     InferenceResult,
     TimedAction,
     _extract_action_chunk,
@@ -169,6 +171,17 @@ def test_cli_uses_planned_camera_defaults_and_reserved_switch():
     assert args.prefetch_threshold == pytest.approx(0.7)
     assert args.observation_similarity_epsilon is None
     assert args.execute is False
+    assert args.log_control is False
+    assert args.control_log_path is None
+
+
+def test_cli_accepts_optional_client_control_log_path(tmp_path):
+    log_path = tmp_path / "client.jsonl"
+
+    args = parse_args(["--host", "127.0.0.1", "--log-control", "--control-log-path", str(log_path)])
+
+    assert args.log_control is True
+    assert args.control_log_path == log_path
 
 
 def test_cli_accepts_reference_hardware_option_names_and_prefetch_remaining():
@@ -235,6 +248,47 @@ def test_control_loop_blends_returned_prefetch_and_keeps_one_request_in_flight()
     assert policy.max_active_infers == 1
     assert set(policy.payloads[0]) == {"state", "images", "task"}
     assert set(policy.payloads[0]["images"]) == {"top", "left_wrist", "right_wrist"}
+
+
+def test_client_control_log_records_state_response_and_applied_action(tmp_path):
+    async def exercise(log_path):
+        policy = MockPolicy([np.full((2, 14), 0.25)])
+        environment = MockEnvironment()
+        control_log = ControlActionLog(log_path)
+        try:
+            await run_control_loop(
+                policy,
+                environment,
+                action_horizon=2,
+                control_hz=100.0,
+                max_steps=1,
+                prefetch_threshold=0.0,
+                request_timeout_s=1.0,
+                max_delta_per_step=0.0,
+                control_log=control_log,
+                monotonic_fn=lambda: 0.0,
+                sleep_fn=asyncio.sleep,
+            )
+        finally:
+            control_log.close()
+
+    log_path = tmp_path / "control.jsonl"
+    asyncio.run(exercise(log_path))
+    records = [json.loads(line) for line in log_path.read_text().splitlines()]
+
+    assert [record["event"] for record in records] == [
+        "inference_request",
+        "inference_response",
+        "control_step",
+    ]
+    assert records[0]["state"] == [0.0] * 14
+    assert records[0]["task"] == "pick"
+    assert records[1]["retained_actions"] == [[0.25] * 14, [0.25] * 14]
+    assert records[2]["source_observation_timestep"] == 0
+    assert records[2]["used_fallback"] is False
+    assert records[2]["queued_action"] == [0.25] * 14
+    assert records[2]["rate_limited_action"] == [0.25] * 14
+    assert records[2]["applied_action"] == [0.25] * 14
 
 
 def test_prefetch_timeout_closes_policy_and_hardware():
