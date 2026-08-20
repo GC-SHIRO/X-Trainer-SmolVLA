@@ -52,7 +52,8 @@ bash tools/download_smolvla_weights_modelscope.sh
 [`tools/README.md`](../tools/README.md)。LoRA adapter 只包含增量参数，因此部署 LoRA 前也必须准备基础模型。
 
 全量训练和 LoRA 启动脚本会在新训练时自动检查两个目录中的 `config.json`。文件存在时，脚本会同时传入本地策略和
-本地 VLM 骨干路径，不会访问 Hugging Face。断点续训不会使用这个自动覆盖，始终以 checkpoint 保存的策略配置为准。
+本地 VLM 骨干路径，并让 tokenizer 使用同一份本地 VLM，不会访问 Hugging Face。断点续训不会使用这个自动覆盖，
+始终以 checkpoint 保存的策略配置为准。
 
 ## 数据集目录与契约
 

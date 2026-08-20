@@ -511,6 +511,9 @@ def train(cfg: TrainPipelineConfig):
             },
             "rename_observations_processor": {"rename_map": cfg.rename_map},
         }
+        if active_cfg.type == "smolvla":
+            # Keep the saved tokenizer processor aligned with a locally overridden VLM backbone.
+            preprocessor_overrides["tokenizer_processor"] = {"tokenizer_name": active_cfg.vlm_model_name}
         postprocessor_overrides = {
             "unnormalizer_processor": {
                 "features": policy.config.output_features,
