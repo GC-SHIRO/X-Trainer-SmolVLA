@@ -252,6 +252,7 @@ stage "PyTorch"
 stage "X-trainer training and deployment dependencies"
 "${CONDA_PYTHON[@]}" -m pip install -e \
   "${REPO_ROOT}[training,smolvla,peft,feetech,intelrealsense]"
+"${CONDA_PYTHON[@]}" -m pip install -r "${REPO_ROOT}/deploy/xtrainer/real/requirements.txt"
 "${CONDA_PYTHON[@]}" -m pip install modelscope
 
 stage "environment validation"
@@ -265,10 +266,11 @@ import msgpack
 import modelscope
 import peft
 import pyrealsense2
+import serial
 import torch
 import transformers
 import wandb
-from lerobot.motors.feetech import FeetechMotorsBus
+from deploy.xtrainer.real.hardware.feetech.sms_sts import SmsStsGripperBus
 
 assert torch.__version__.split("+", 1)[0] == "2.8.0", torch.__version__
 if sys.argv[1] == "0":

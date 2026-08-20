@@ -177,10 +177,9 @@ bash scripts/xtrainer/train_smolvla_lora.sh \
 
 全量训练和 LoRA 训练的输出用途不同：
 
-
-| 训练方式  | 部署时使用的目录                              | 启动参数         |
-| ----------- | ----------------------------------------------- | ------------------ |
-| 全量微调  | checkpoint 下的`pretrained_model`             | `--checkpoint`   |
+| 训练方式  | 部署时使用的目录                                  | 启动参数           |
+| --------- | ------------------------------------------------- | ------------------ |
+| 全量微调  | checkpoint 下的`pretrained_model`               | `--checkpoint`   |
 | LoRA 微调 | 含`adapter_config.json` 的 `pretrained_model` | `--lora-adapter` |
 
 全量训练示例目录：
@@ -243,7 +242,7 @@ python scripts/xtrainer/serve_mock_policy.py \
 ```bash
 conda activate xtrainer-smolvla
 python scripts/xtrainer/run_real.py \
-  --host 192.168.1.100 \
+  --host 127.0.0.1 \
   --port 8000 \
   --task "保持当前位置，检查部署链路" \
   --action-horizon 5 \
@@ -264,16 +263,15 @@ Mock metadata 不包含 `reset_pose`，因此 Mock 联调不会主动把机械�
 
 默认硬件参数与 X-trainer 参考部署保持一致，可以通过 `run_real.py` 参数覆盖：
 
-
-| 设备           | 默认配置                |
-| ---------------- | ------------------------- |
-| 左 Dobot       | `192.168.5.1`           |
-| 右 Dobot       | `192.168.5.2`           |
+| 设备           | 默认配置                    |
+| -------------- | --------------------------- |
+| 左 Dobot       | `192.168.5.1`             |
+| 右 Dobot       | `192.168.5.2`             |
 | 左夹爪         | `/dev/ttyUSB1`，ID `21` |
 | 右夹爪         | `/dev/ttyUSB0`，ID `22` |
-| 顶部 RealSense | 序列号`409122273405`    |
-| 左腕 RealSense | 序列号`412622272997`    |
-| 右腕 RealSense | 序列号`412622271417`    |
+| 顶部 RealSense | 序列号`409122273405`      |
+| 左腕 RealSense | 序列号`412622272997`      |
+| 右腕 RealSense | 序列号`412622271417`      |
 
 部署前逐项确认：
 
