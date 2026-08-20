@@ -9,7 +9,6 @@ both grippers. It always attempts to return to the observed baseline.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import logging
 import sys
 import time
@@ -23,7 +22,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from deploy.xtrainer.real.environment import STATE_KEY, XTrainerRealEnvironment, XTrainerSafetyConfig
-from deploy.xtrainer.real.constants import XTRAINER_RESET_POSE
 from deploy.xtrainer.real.hardware.dobot_xtrainer import XTrainerDobotArm
 from deploy.xtrainer.real.hardware.feetech import (
     XTrainerFeetechGripper,
@@ -142,15 +140,6 @@ def _move_joint(environment: XTrainerRealEnvironment, target: np.ndarray, hold_s
     return np.asarray(applied, dtype=np.float64)
 
 
-def _move_to_reset(environment: XTrainerRealEnvironment) -> np.ndarray:
-    """Move arms and both grippers to the shared reset pose within safety limits."""
-
-    target = np.asarray(XTRAINER_RESET_POSE, dtype=np.float64)
-    current = _move_joint(environment, target, 0.0)
-    current = _move_gripper(environment, current, 6, float(target[6]), 0.0)
-    return _move_gripper(environment, current, 13, float(target[13]), 0.0)
-
-
 def _move_gripper(
     environment: XTrainerRealEnvironment,
     current: np.ndarray,
@@ -176,34 +165,33 @@ def _move_gripper(
 def run(args: argparse.Namespace) -> None:
     _validate_args(args)
     environment = build_environment(args)
-    reset_state: np.ndarray | None = None
+    baseline: np.ndarray | None = None
     current: np.ndarray | None = None
     try:
         observation = environment.reset()
-        observed_state = np.asarray(observation[STATE_KEY], dtype=np.float64)
-        if observed_state.shape != (_ACTION_DIM,) or not np.all(np.isfinite(observed_state)):
-            raise ValueError(f"Expected finite {STATE_KEY} shape ({_ACTION_DIM},), got {observed_state.shape}")
+        baseline = np.asarray(observation[STATE_KEY], dtype=np.float64)
+        if baseline.shape != (_ACTION_DIM,) or not np.all(np.isfinite(baseline)):
+            raise ValueError(f"Expected finite {STATE_KEY} shape ({_ACTION_DIM},), got {baseline.shape}")
         image_shapes = {
             key: value.shape for key, value in observation.items() if key != STATE_KEY and hasattr(value, "shape")
         }
         _LOGGER.info("Camera check passed: %s", image_shapes)
-        _LOGGER.info("Observed state: %s", np.array2string(observed_state, precision=4))
+        _LOGGER.info("Baseline state: %s", np.array2string(baseline, precision=4))
 
-        # Cameras and every serial endpoint are connected before this point, but
-        # neither arm is enabled until their successful observation is verified.
+        # Match the reference basic-control sequence: reset() samples the
+        # current state as baseline; no separate global pose is commanded.
+        # Cameras and every serial endpoint are connected before this point,
+        # but neither arm is enabled until their observation is verified.
         environment.enable_arms()
-        _LOGGER.info("Moving to the configured X-trainer reset pose")
-        reset_state = _move_to_reset(environment)
-        current = reset_state.copy()
-        _LOGGER.info("Reset pose reached: %s", np.array2string(reset_state, precision=4))
+        current = baseline.copy()
 
         for side, joint_number, action_index in _JOINTS:
             for direction, delta in (("+5", _JOINT_DELTA_RAD), ("-5", -_JOINT_DELTA_RAD)):
-                target = reset_state.copy()
+                target = baseline.copy()
                 target[action_index] += delta
                 _LOGGER.info("Testing %s joint %s: %s degrees", side, joint_number, direction)
                 current = _move_joint(environment, target, args.hold_seconds)
-                current = _move_joint(environment, reset_state, args.hold_seconds)
+                current = _move_joint(environment, baseline, args.hold_seconds)
 
         for side, action_index in _GRIPPERS:
             for state_name, target_value in (("open", args.gripper_open), ("close", args.gripper_close)):
@@ -213,16 +201,21 @@ def run(args: argparse.Namespace) -> None:
                 environment,
                 current,
                 action_index,
-                float(reset_state[action_index]),
+                float(baseline[action_index]),
                 args.hold_seconds,
             )
 
         _LOGGER.info("Sequential X-trainer hardware check passed")
     finally:
-        if reset_state is not None and current is not None:
-            _LOGGER.info("Restoring the configured X-trainer reset pose")
-            with contextlib.suppress(Exception):
-                _move_to_reset(environment)
+        if baseline is not None:
+            _LOGGER.info("Restoring startup baseline state")
+            try:
+                recovery = current if current is not None else baseline
+                recovery = _move_gripper(environment, recovery, 6, float(baseline[6]), 0.0)
+                recovery = _move_gripper(environment, recovery, 13, float(baseline[13]), 0.0)
+                _move_joint(environment, baseline, 0.0)
+            except Exception:
+                _LOGGER.exception("Could not return to the startup state; use the emergency stop if needed")
         environment.close()
 
 
