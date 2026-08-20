@@ -41,7 +41,8 @@ CODEBASE_VERSION = "v2.1"
 CHUNK_SIZE = 1000
 DATA_PATH = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
 VIDEO_PATH = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
-TEMP_IMAGE_PATH = "images/{image_key}/episode_{episode_index:06d}/frame_{frame_index:06d}.png"
+# ``encode_video_frames`` discovers RGB frames using ``frame-000000.png``.
+TEMP_IMAGE_PATH = "images/{image_key}/episode_{episode_index:06d}/frame-{frame_index:06d}.png"
 CAMERAS = {
     "observation.images.top": "topImg",
     "observation.images.left_wrist": "leftImg",
