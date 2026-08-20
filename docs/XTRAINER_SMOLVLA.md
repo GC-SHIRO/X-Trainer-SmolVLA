@@ -84,6 +84,10 @@ my_xtrainer_dataset/
 SmolVLA 的任务文本。14 维向量顺序固定为：左臂关节 1–6、左夹爪、右臂关节 1–6、右夹爪；夹爪值必须归一化到
 `[0, 1]`。
 
+基础 SmolVLA checkpoint 使用 `observation.images.camera1`、`camera2`、`camera3` 三个视觉键。X-trainer 的
+全量和 LoRA 配置已内置重命名：`top → camera1`、`left_wrist → camera2`、`right_wrist → camera3`。原始数据集
+文件和字段不会被修改。
+
 ## 单 GPU 全量微调
 
 全量训练启动脚本使用 `configs/xtrainer/train_smolvla.yaml`，其中指定
