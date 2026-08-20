@@ -1,7 +1,7 @@
 # X-trainer 环境安装
 
-本目录提供 Ubuntu 24.04 上的 X-trainer SmolVLA 一键环境安装脚本。默认安装同一个环境中完成数据读取、
-SmolVLA 全量训练、LoRA 训练、策略服务、Mock 链路和真机部署所需的 Python 依赖。
+本目录提供 Ubuntu 24.04 上的 X-trainer SmolVLA 一键环境安装脚本。默认安装同一个环境中完成原始数据转换、
+数据读取、SmolVLA 全量训练、LoRA 训练、策略服务、Mock 链路和真机部署所需的 Python 依赖。
 
 ## 安装前要求
 
@@ -42,9 +42,10 @@ bash tools/install_xtrainer_env.sh --source official
 2. 通过 `apt-get` 安装编译工具、FFmpeg、Git、USB 和 udev 运行库。
 3. 创建或复用 `xtrainer-smolvla` Conda 环境。
 4. 安装 Python 3.12、PyTorch 2.8.0 和 TorchCodec 0.6.0。
-5. 从当前仓库安装 `training`、`smolvla`、`peft`、`feetech` 和 `intelrealsense` extras。
+5. 从当前仓库安装 `training`、`smolvla`、`peft`、`feetech` 和 `intelrealsense` extras，其中包含转换所需的
+   Datasets、PyArrow、OpenCV、Pillow 和 PyAV；同时安装系统 FFmpeg。
 6. 安装 ModelScope 下载依赖。
-7. 验证训练、WebSocket、Feetech 和 RealSense 的关键导入。
+7. 验证训练、WebSocket、Feetech、RealSense，以及原始数据转换所需的 OpenCV、Pillow、PyArrow、PyAV 和 FFmpeg。
 
 如果环境已经存在，脚本会复用并补齐依赖。需要完全重建时使用：
 
@@ -79,6 +80,9 @@ conda activate xtrainer-dev
 - 不连接 Dobot、Feetech 或 RealSense，也不会下发机械臂动作。
 
 真机部署前仍需根据现场设备配置串口用户组、RealSense USB 权限、Dobot IP 和防火墙规则。
+
+原始 `collect_data` 转换为训练数据集的命令与字段约定见
+[`docs/XTRAINER_SMOLVLA.md`](../docs/XTRAINER_SMOLVLA.md#从原始采集数据转换)。
 
 ## 下载 SmolVLA 模型权重
 

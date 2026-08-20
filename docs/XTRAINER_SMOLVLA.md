@@ -1,8 +1,8 @@
 # X-trainer SmolVLA：训练、Mock 联调与真机部署
 
 本文说明如何使用 X-trainer 双臂机器人采集的数据微调标准 SmolVLA 策略，并完成 Mock Policy 联调和
-真机部署。训练复用现有的 `lerobot-train` 训练循环和只读 LeRobot Dataset v2.1 适配器，不转换、覆盖或
-改写原始数据集。
+真机部署。原始采集数据可先转换为本项目训练所需的 LeRobot Dataset v2.1；训练本身复用现有的
+`lerobot-train` 训练循环和只读 v2.1 适配器，不会改写转换完成的数据集。
 
 完整流程为：准备 v2.1 数据集 → 全量或 LoRA 训练 → Mock Policy 联调机器人端 → 启动真实策略服务 →
 小步执行真机任务。本文不包含代码单元测试或模块测试。
@@ -17,8 +17,9 @@ bash tools/install_xtrainer_env.sh
 conda activate xtrainer-smolvla
 ```
 
-脚本默认安装 PyTorch 2.8.0 CUDA 12.8 wheel，以及训练、LoRA、WebSocket 服务、Feetech 夹爪和
-Intel RealSense 依赖。GPU 模式要求 NVIDIA 驱动不低于 `570.26`，但不要求预装系统 CUDA Toolkit。
+脚本默认安装 PyTorch 2.8.0 CUDA 12.8 wheel，以及训练、LoRA、WebSocket 服务、Feetech 夹爪、
+Intel RealSense 和原始数据转换依赖（Datasets、PyArrow、OpenCV、Pillow、PyAV、FFmpeg）。GPU 模式要求
+NVIDIA 驱动不低于 `570.26`，但不要求预装系统 CUDA Toolkit。
 脚本不会安装显卡驱动、下载模型或数据集，也不会修改串口和 USB 权限。
 
 安装默认使用国内镜像完成 Ubuntu、Conda、PyPI 和 PyTorch 依赖下载，并且不会永久修改系统源配置。如需改用
@@ -54,6 +55,44 @@ bash tools/download_smolvla_weights_modelscope.sh
 全量训练和 LoRA 启动脚本会在新训练时自动检查两个目录中的 `config.json`。文件存在时，脚本会同时传入本地策略和
 本地 VLM 骨干路径，并让 tokenizer 使用同一份本地 VLM，不会访问 Hugging Face。断点续训不会使用这个自动覆盖，
 始终以 checkpoint 保存的策略配置为准。
+
+## 从原始采集数据转换
+
+原始采集目录应按 episode 组织，并在每个 episode 中包含三路图像与同名帧号的观测文件：
+
+```text
+collect_data/
+└── <episode_id>/
+    ├── topImg/<frame_id>.jpg
+    ├── leftImg/<frame_id>.jpg
+    ├── rightImg/<frame_id>.jpg
+    └── observation/<frame_id>.pkl
+```
+
+每个 `.pkl` 必须包含 14 维 `joint_positions`（状态）和 14 维 `control`（动作）。在已激活的一键环境中执行：
+
+```bash
+python scripts/xtrainer/convert_raw_to_lerobot_2_1.py \
+  --raw-root /data/xtrainer/collect_data \
+  --output-root /data/xtrainer/my_xtrainer_dataset \
+  --task "将试管放入试管架" \
+  --fps 30 \
+  --use-videos \
+  --overwrite-output
+```
+
+转换器仅保留 state、action 和三路图像都存在且可读取的帧，默认跳过坏帧；`--fail-on-bad-frames` 可改为遇到
+坏帧立即停止。`--overwrite-output` 会递归删除已有的非空输出目录，必须只指向可安全替换的目标目录，不能指向
+原始采集目录。默认 MP4 视频输出与训练配置兼容；`--no-videos` 只适合转换调试，不能通过本项目的标准 v2.1
+视频校验或 SmolVLA 训练。
+
+转换后先完整校验，再启动训练：
+
+```bash
+python scripts/xtrainer/validate_dataset_v21.py \
+  --root /data/xtrainer/my_xtrainer_dataset \
+  --all-episodes
+```
 
 ## 数据集目录与契约
 

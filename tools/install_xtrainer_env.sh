@@ -258,21 +258,27 @@ stage "X-trainer training and deployment dependencies"
 stage "environment validation"
 "${CONDA_PYTHON[@]}" - "${CPU_ONLY}" <<'PY'
 import sys
+from shutil import which
 
 import accelerate
 import aiohttp
+import av
+import cv2
 import datasets
 import msgpack
 import modelscope
 import peft
+import pyarrow
 import pyrealsense2
 import serial
 import torch
 import transformers
 import wandb
+from PIL import Image
 from deploy.xtrainer.real.hardware.feetech.sms_sts import SmsStsGripperBus
 
 assert torch.__version__.split("+", 1)[0] == "2.8.0", torch.__version__
+assert which("ffmpeg"), "ffmpeg is required for raw-recording conversion"
 if sys.argv[1] == "0":
     assert torch.cuda.is_available(), "CUDA PyTorch was installed but no GPU is available"
 
@@ -280,6 +286,7 @@ print("environment validation passed")
 print("torch", torch.__version__, "cuda", torch.version.cuda)
 print("transformers", transformers.__version__)
 print("datasets", datasets.__version__)
+print("converter dependencies", "opencv", cv2.__version__, "pyarrow", pyarrow.__version__, "pyav", av.__version__)
 PY
 
 log "environment ready: ${ENV_NAME}"
