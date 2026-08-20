@@ -57,6 +57,11 @@ class XTrainerWebSocketPolicyServer:
             self.port = sockets.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
+        close = getattr(self.policy, "close", None)
+        if callable(close):
+            result = close()
+            if inspect.isawaitable(result):
+                await result
         if self._runner is not None:
             await self._runner.cleanup()
         self._runner = None

@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,7 @@ from deploy.xtrainer.websocket_policy_server import XTrainerWebSocketPolicyServe
 from deploy.xtrainer.real.constants import XTRAINER_RESET_POSE
 
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "xtrainer" / "deploy.yaml"
+DEFAULT_ACTION_LOG_DIR = REPO_ROOT / "outputs" / "xtrainer" / "action_logs"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -47,6 +49,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Actions returned per inference (the reference launcher calls this --use-length)",
+    )
+    parser.add_argument(
+        "--log-actions",
+        action="store_true",
+        help="Write every returned action chunk to a JSONL file (disabled by default)",
+    )
+    parser.add_argument(
+        "--action-log-path",
+        default=None,
+        help="JSONL destination used with --log-actions (defaults under outputs/xtrainer/action_logs/)",
     )
     parser.add_argument("--no-warmup", action="store_true", help="Skip the startup warmup inference")
     return parser.parse_args(argv)
@@ -76,6 +88,12 @@ def main() -> None:
     if actions_per_chunk <= 0:
         raise ValueError("actions_per_chunk must be positive")
 
+    action_log_path = None
+    if args.log_actions:
+        action_log_path = Path(args.action_log_path) if args.action_log_path else (
+            DEFAULT_ACTION_LOG_DIR / f"actions_{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.jsonl"
+        )
+
     observation_keys = xtrainer_cfg["observation_keys"]
     camera_keys = observation_keys["images"]
 
@@ -89,6 +107,7 @@ def main() -> None:
         action_key=xtrainer_cfg.get("action_key", "action"),
         reset_pose=list(XTRAINER_RESET_POSE),
         warmup=not args.no_warmup,
+        action_log_path=action_log_path,
     )
 
     server = XTrainerWebSocketPolicyServer(
@@ -99,11 +118,12 @@ def main() -> None:
     )
 
     logging.info(
-        "Serving SmolVLA policy on %s:%d (checkpoint=%s, actions_per_chunk=%d)",
+        "Serving SmolVLA policy on %s:%d (checkpoint=%s, actions_per_chunk=%d, action_log=%s)",
         host,
         port,
         checkpoint,
         actions_per_chunk,
+        action_log_path or "disabled",
     )
     asyncio.run(_serve_forever(server))
 

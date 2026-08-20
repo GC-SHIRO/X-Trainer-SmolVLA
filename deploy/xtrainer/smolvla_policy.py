@@ -12,6 +12,9 @@ semantics.
 
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -26,6 +29,7 @@ from lerobot.utils.import_utils import require_package
 
 STATE_DIM = 14
 ACTION_DIM = 14
+logger = logging.getLogger(__name__)
 
 
 class SmolVLAXTrainerPolicy:
@@ -43,6 +47,7 @@ class SmolVLAXTrainerPolicy:
         action_key: str = ACTION,
         reset_pose: list[float] | None = None,
         warmup: bool = True,
+        action_log_path: str | Path | None = None,
     ) -> None:
         self.device = device
         self.actions_per_chunk = actions_per_chunk
@@ -54,12 +59,16 @@ class SmolVLAXTrainerPolicy:
         self.state_key = state_key
         self.action_key = action_key
         self.reset_pose = reset_pose
+        self._action_log_path = Path(action_log_path) if action_log_path is not None else None
+        self._action_log_file = None
 
         self.policy = self._load_policy(checkpoint, lora_adapter, device)
         self.preprocessor, self.postprocessor = self._load_processors(checkpoint, lora_adapter)
 
         if warmup:
             self._warmup()
+        if self._action_log_path is not None:
+            self._open_action_log()
 
     def _load_policy(self, checkpoint: str, lora_adapter: str | None, device: str) -> SmolVLAPolicy:
         if lora_adapter is None:
@@ -110,6 +119,12 @@ class SmolVLAXTrainerPolicy:
     def reset(self) -> None:
         self.policy.reset()
 
+    def close(self) -> None:
+        """Close the optional action log file when the policy server stops."""
+        if self._action_log_file is not None:
+            self._action_log_file.close()
+            self._action_log_file = None
+
     def infer(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._validate_payload(payload)
         batch = self._build_batch(payload)
@@ -127,7 +142,24 @@ class SmolVLAXTrainerPolicy:
         if actions_np.shape[-1] != ACTION_DIM:
             raise ValueError(f"policy produced action dim {actions_np.shape[-1]}, expected {ACTION_DIM}")
 
+        self._record_actions(actions_np)
         return {self.action_key: actions_np.astype(np.float32)}
+
+    def _open_action_log(self) -> None:
+        assert self._action_log_path is not None
+        self._action_log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._action_log_file = self._action_log_path.open("a", encoding="utf-8", buffering=1)
+        logger.info("Action logging enabled: %s", self._action_log_path)
+
+    def _record_actions(self, actions: np.ndarray) -> None:
+        """Append one action chunk per line for every non-warmup policy response."""
+        if self._action_log_file is None:
+            return
+        try:
+            self._action_log_file.write(json.dumps(actions.tolist(), allow_nan=False) + "\n")
+        except OSError:
+            logger.exception("Could not write action log; disabling action logging")
+            self.close()
 
     def _validate_payload(self, payload: dict[str, Any]) -> None:
         state = payload.get("state")

@@ -7,6 +7,7 @@ run on CPU without network access or GPU.
 
 from __future__ import annotations
 
+import json
 import numpy as np
 import pytest
 import torch
@@ -55,7 +56,7 @@ class IdentityPipeline:
         return data
 
 
-def _make_policy(monkeypatch, *, fake_policy=None, load_calls=None):
+def _make_policy(monkeypatch, *, fake_policy=None, load_calls=None, action_log_path=None):
     fake_policy = fake_policy or FakePolicy()
     load_calls = load_calls if load_calls is not None else []
 
@@ -80,6 +81,7 @@ def _make_policy(monkeypatch, *, fake_policy=None, load_calls=None):
         device="cpu",
         camera_keys=CAMERA_KEYS,
         warmup=False,
+        action_log_path=action_log_path,
     )
     return policy, fake_policy
 
@@ -110,6 +112,18 @@ def test_infer_truncates_to_actions_per_chunk(monkeypatch):
     result = policy.infer(_valid_payload())
 
     assert result["action"].shape == (3, ACTION_DIM)
+
+
+def test_infer_writes_action_log_when_enabled(monkeypatch, tmp_path):
+    log_path = tmp_path / "actions.jsonl"
+    policy, _ = _make_policy(monkeypatch, action_log_path=log_path)
+
+    policy.infer(_valid_payload())
+    policy.close()
+
+    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 1
+    assert np.asarray(records[0]).shape == (5, ACTION_DIM)
 
 
 def test_infer_rejects_wrong_state_shape_before_calling_model(monkeypatch):
