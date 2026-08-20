@@ -471,11 +471,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--camera-warmup-frames", type=int, default=30)
-    parser.add_argument("--max-joint-delta", type=float, default=0.17)
-    parser.add_argument("--max-gripper-delta", type=float, default=0.05)
-    parser.add_argument("--ramp-step", type=float, default=0.01)
-    parser.add_argument("--ramp-max-steps", type=int, default=100)
-    parser.add_argument("--gripper-update-threshold", type=float, default=0.02)
+    parser.add_argument(
+        "--max-joint-delta",
+        type=float,
+        default=float("inf"),
+        help="Optional environment joint delta limit in radians; default disables it",
+    )
+    parser.add_argument(
+        "--max-gripper-delta",
+        type=float,
+        default=float("inf"),
+        help="Optional environment gripper delta limit; default disables it",
+    )
+    parser.add_argument(
+        "--ramp-step",
+        type=float,
+        default=0.01,
+        help="Joint delta used only while moving to reset pose",
+    )
+    parser.add_argument(
+        "--ramp-max-steps",
+        type=int,
+        default=100,
+        help="Maximum reset interpolation steps",
+    )
+    parser.add_argument(
+        "--gripper-update-threshold",
+        type=float,
+        default=0.0,
+        help="Minimum gripper target change to transmit; default sends every change",
+    )
     parser.add_argument("--prefetch-threshold", type=float, default=0.7)
     parser.add_argument(
         "--prefetch-remaining",

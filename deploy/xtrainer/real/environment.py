@@ -28,12 +28,15 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class XTrainerSafetyConfig:
-    max_joint_delta_rad: float = 0.17
-    max_gripper_delta: float = 0.05
+    # Policy deployment defaults intentionally do not alter the policy action.
+    # Hardware/controller limits remain the final protection; callers that need
+    # conservative motion can explicitly supply finite limits.
+    max_joint_delta_rad: float = float("inf")
+    max_gripper_delta: float = float("inf")
     ramp_step_rad: float = 0.01
     ramp_max_steps: int = 100
-    gripper_update_threshold: float = 0.02
-    joint_position_limit_rad: tuple[float, float] = (-2 * np.pi, 2 * np.pi)
+    gripper_update_threshold: float = 0.0
+    joint_position_limit_rad: tuple[float, float] = (-float("inf"), float("inf"))
     gripper_limit: tuple[float, float] = (0.0, 1.0)
     require_finite_actions: bool = True
 

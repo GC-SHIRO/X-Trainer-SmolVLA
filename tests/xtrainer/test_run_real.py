@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 
 import numpy as np
 import pytest
@@ -173,6 +174,11 @@ def test_cli_uses_planned_camera_defaults_and_reserved_switch():
     assert args.execute is False
     assert args.log_control is False
     assert args.control_log_path is None
+    assert math.isinf(args.max_joint_delta)
+    assert math.isinf(args.max_gripper_delta)
+    assert args.ramp_step == pytest.approx(0.01)
+    assert args.ramp_max_steps == 100
+    assert args.gripper_update_threshold == 0.0
 
 
 def test_cli_accepts_optional_client_control_log_path(tmp_path):
