@@ -354,7 +354,8 @@ def make_dataloaders(
     # Only swap in the language-aware collate when the dataset actually
     # declares language columns; otherwise stay on PyTorch's default
     # collate so non-language training runs are unaffected.
-    collate_fn = lerobot_collate_fn if dataset.meta.has_language_columns else None
+    has_language_columns = getattr(dataset.meta, "has_language_columns", False)
+    collate_fn = lerobot_collate_fn if has_language_columns else None
     dataloader = torch.utils.data.DataLoader(
         dataset,
         num_workers=cfg.num_workers,
@@ -383,7 +384,7 @@ def make_dataloaders(
                 selected.extend(frames.tolist())
             eval_ds = torch.utils.data.Subset(eval_dataset, selected)
 
-        eval_collate_fn = lerobot_collate_fn if dataset.meta.has_language_columns else None
+        eval_collate_fn = lerobot_collate_fn if has_language_columns else None
         eval_dataloader = torch.utils.data.DataLoader(
             eval_ds,
             batch_size=cfg.batch_size,
