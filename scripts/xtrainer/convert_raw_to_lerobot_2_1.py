@@ -28,6 +28,7 @@ import datasets
 import numpy as np
 from PIL import Image
 
+from lerobot.configs import RGBEncoderConfig
 from lerobot.datasets.compute_stats import aggregate_stats, compute_episode_stats
 from lerobot.datasets.feature_utils import get_hf_features_from_features
 from lerobot.datasets.io_utils import embed_images
@@ -191,15 +192,22 @@ def _encode_video(
     """Encode in a child process to isolate FFmpeg/torchcodec native crashes."""
     if not use_subprocess:
         encode_video_frames(
-            imgs_dir=image_dir, video_path=video_path, fps=fps, vcodec=vcodec, overwrite=True, log_level=None
+            imgs_dir=image_dir,
+            video_path=video_path,
+            fps=fps,
+            video_encoder=RGBEncoderConfig(vcodec=vcodec),
+            overwrite=True,
+            log_level=None,
         )
         return
     child = (
         "from pathlib import Path\n"
         "import sys\n"
+        "from lerobot.configs import RGBEncoderConfig\n"
         "from lerobot.datasets.video_utils import encode_video_frames\n"
         "encode_video_frames(imgs_dir=Path(sys.argv[1]), video_path=Path(sys.argv[2]), "
-        "fps=int(sys.argv[3]), vcodec=sys.argv[4], overwrite=True, log_level=None)\n"
+        "fps=int(sys.argv[3]), video_encoder=RGBEncoderConfig(vcodec=sys.argv[4]), "
+        "overwrite=True, log_level=None)\n"
     )
     completed = subprocess.run(
         [sys.executable, "-c", child, str(image_dir), str(video_path), str(fps), vcodec],
