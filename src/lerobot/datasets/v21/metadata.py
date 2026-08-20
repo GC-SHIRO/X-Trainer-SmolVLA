@@ -242,6 +242,7 @@ class LeRobotDatasetMetadataV21:
             template.format(
                 chunk_index=episode_index // self.chunks_size,
                 video_chunk=episode_index // self.chunks_size,
+                episode_chunk=episode_index // self.chunks_size,
                 episode_index=episode_index,
                 video_key=camera_key,
             )
