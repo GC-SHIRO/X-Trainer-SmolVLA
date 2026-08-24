@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 
+import cv2
 import numpy as np
 import pytest
 
@@ -19,6 +20,7 @@ from scripts.xtrainer.run_real import (
     TimedAction,
     _extract_action_chunk,
     _merge_action_queue,
+    _policy_payload,
     _rate_limit_action,
     _should_prefetch,
     parse_args,
@@ -126,6 +128,24 @@ def test_extract_action_chunk_validates_shape_and_finite_values():
     chunk[0, 0] = np.nan
     with pytest.raises(ValueError, match="non-finite"):
         _extract_action_chunk({"action": chunk}, 5)
+
+
+def test_policy_payload_applies_camera_crops_and_flips():
+    observation = _observation()
+    top_image = np.arange(10 * 20 * 3, dtype=np.uint8).reshape(10, 20, 3)
+    left_wrist_image = np.arange(10 * 20 * 3, dtype=np.uint8).reshape(10, 20, 3)
+    right_wrist_image = np.arange(10 * 20 * 3, dtype=np.uint8).reshape(10, 20, 3)
+    observation[TOP_IMAGE_KEY] = top_image
+    observation[LEFT_WRIST_IMAGE_KEY] = left_wrist_image
+    observation[RIGHT_WRIST_IMAGE_KEY] = right_wrist_image
+
+    payload = _policy_payload(observation)
+
+    expected_top = cv2.resize(top_image[2:8, 4:16], (20, 10))[::-1, ::-1]
+    np.testing.assert_array_equal(payload["images"]["top"], expected_top)
+    assert payload["images"]["top"].shape == top_image.shape
+    np.testing.assert_array_equal(payload["images"]["left_wrist"], left_wrist_image[:, ::-1])
+    np.testing.assert_array_equal(payload["images"]["right_wrist"], right_wrist_image[::-1, ::-1])
 
 
 def test_merge_drops_stale_actions_and_blends_matching_timesteps():

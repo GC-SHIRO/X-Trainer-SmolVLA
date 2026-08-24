@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -67,11 +68,12 @@ class InferenceResult:
 class ControlActionLog:
     """Optional JSONL trace of the client-side policy/control boundary.
 
-    The server log deliberately contains only raw action chunks. This trace
-    makes it possible to compare those chunks with the state sent by the
-    client, the action selected from the queue, and the action ultimately
-    accepted by the real-environment safety layer. Images are intentionally
-    omitted so the trace remains small and easy to share.
+    The server action log contains raw action chunks and the visual inputs
+    sent to the model. This trace makes it possible to compare those chunks
+    with the state sent by the client, the action selected from the queue,
+    and the action ultimately accepted by the real-environment safety layer.
+    Images are intentionally omitted here so this client-side trace remains
+    small and easy to share.
     """
 
     def __init__(self, path: Path) -> None:
@@ -191,13 +193,38 @@ def _should_prefetch(
     return threshold > 0 and queue_size / action_horizon <= threshold
 
 
+def _crop_top_image(image: np.ndarray) -> np.ndarray:
+    """Match the top-camera crop used while collecting the X-trainer dataset."""
+    height, width, _ = image.shape
+    top_px = int(0.2 * height)
+    bottom_px = int(0.2 * height)
+    left_px = int(0.2 * width)
+    right_px = int(0.2 * width)
+
+    top_px = max(0, min(top_px, height - 1))
+    bottom_px = max(0, min(bottom_px, height - 1 - top_px))
+    left_px = max(0, min(left_px, width - 1))
+    right_px = max(0, min(right_px, width - 1 - left_px))
+
+    cropped = image[top_px : height - bottom_px, left_px : width - right_px]
+    return cv2.resize(cropped, (width, height))
+
+
+def _flip_vertical(image: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(image[::-1])
+
+
+def _flip_horizontal(image: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(image[:, ::-1])
+
+
 def _policy_payload(observation: dict[str, Any]) -> dict[str, Any]:
     return {
         "state": observation[STATE_KEY],
         "images": {
-            "top": observation[TOP_IMAGE_KEY],
-            "left_wrist": observation[LEFT_WRIST_IMAGE_KEY],
-            "right_wrist": observation[RIGHT_WRIST_IMAGE_KEY],
+            "top": _flip_horizontal(_flip_vertical(_crop_top_image(observation[TOP_IMAGE_KEY]))),
+            "left_wrist": _flip_horizontal(observation[LEFT_WRIST_IMAGE_KEY]),
+            "right_wrist": _flip_horizontal(_flip_vertical(observation[RIGHT_WRIST_IMAGE_KEY])),
         },
         "task": observation[TASK_KEY],
     }
