@@ -223,7 +223,7 @@ def _policy_payload(observation: dict[str, Any]) -> dict[str, Any]:
         "state": observation[STATE_KEY],
         "images": {
             "top": _flip_horizontal(_flip_vertical(_crop_top_image(observation[TOP_IMAGE_KEY]))),
-            "left_wrist": _flip_horizontal(observation[LEFT_WRIST_IMAGE_KEY]),
+            "left_wrist": observation[LEFT_WRIST_IMAGE_KEY],
             "right_wrist": _flip_horizontal(_flip_vertical(observation[RIGHT_WRIST_IMAGE_KEY])),
         },
         "task": observation[TASK_KEY],

@@ -144,7 +144,7 @@ def test_policy_payload_applies_camera_crops_and_flips():
     expected_top = cv2.resize(top_image[2:8, 4:16], (20, 10))[::-1, ::-1]
     np.testing.assert_array_equal(payload["images"]["top"], expected_top)
     assert payload["images"]["top"].shape == top_image.shape
-    np.testing.assert_array_equal(payload["images"]["left_wrist"], left_wrist_image[:, ::-1])
+    np.testing.assert_array_equal(payload["images"]["left_wrist"], left_wrist_image)
     np.testing.assert_array_equal(payload["images"]["right_wrist"], right_wrist_image[::-1, ::-1])
 
 
