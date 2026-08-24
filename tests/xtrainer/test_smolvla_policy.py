@@ -117,13 +117,21 @@ def test_infer_truncates_to_actions_per_chunk(monkeypatch):
 def test_infer_writes_action_log_when_enabled(monkeypatch, tmp_path):
     log_path = tmp_path / "actions.jsonl"
     policy, _ = _make_policy(monkeypatch, action_log_path=log_path)
+    payload = _valid_payload()
+    payload["images"] = {
+        name: np.full((2, 3, 3), index, dtype=np.uint8)
+        for index, name in enumerate(CAMERA_KEYS)
+    }
 
-    policy.infer(_valid_payload())
+    policy.infer(payload)
     policy.close()
 
     records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert len(records) == 1
-    assert np.asarray(records[0]).shape == (5, ACTION_DIM)
+    assert np.asarray(records[0]["action"]).shape == (5, ACTION_DIM)
+    assert set(records[0]["images"]) == set(CAMERA_KEYS)
+    for name, image in payload["images"].items():
+        np.testing.assert_array_equal(records[0]["images"][name], image)
 
 
 def test_infer_rejects_wrong_state_shape_before_calling_model(monkeypatch):

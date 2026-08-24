@@ -142,7 +142,7 @@ class SmolVLAXTrainerPolicy:
         if actions_np.shape[-1] != ACTION_DIM:
             raise ValueError(f"policy produced action dim {actions_np.shape[-1]}, expected {ACTION_DIM}")
 
-        self._record_actions(actions_np)
+        self._record_actions(actions_np, payload["images"])
         return {self.action_key: actions_np.astype(np.float32)}
 
     def _open_action_log(self) -> None:
@@ -151,12 +151,16 @@ class SmolVLAXTrainerPolicy:
         self._action_log_file = self._action_log_path.open("a", encoding="utf-8", buffering=1)
         logger.info("Action logging enabled: %s", self._action_log_path)
 
-    def _record_actions(self, actions: np.ndarray) -> None:
-        """Append one action chunk per line for every non-warmup policy response."""
+    def _record_actions(self, actions: np.ndarray, images: dict[str, Any]) -> None:
+        """Append each action chunk and its raw visual inputs as one JSONL record."""
         if self._action_log_file is None:
             return
         try:
-            self._action_log_file.write(json.dumps(actions.tolist(), allow_nan=False) + "\n")
+            record = {
+                "action": actions.tolist(),
+                "images": {name: np.asarray(images[name]).tolist() for name in self.camera_keys},
+            }
+            self._action_log_file.write(json.dumps(record, allow_nan=False) + "\n")
         except OSError:
             logger.exception("Could not write action log; disabling action logging")
             self.close()
