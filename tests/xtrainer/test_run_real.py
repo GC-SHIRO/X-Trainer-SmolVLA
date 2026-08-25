@@ -130,7 +130,7 @@ def test_extract_action_chunk_validates_shape_and_finite_values():
         _extract_action_chunk({"action": chunk}, 5)
 
 
-def test_policy_payload_applies_camera_crops_and_flips():
+def test_policy_payload_applies_top_camera_crop_and_flips_only():
     observation = _observation()
     top_image = np.arange(10 * 20 * 3, dtype=np.uint8).reshape(10, 20, 3)
     left_wrist_image = np.arange(10 * 20 * 3, dtype=np.uint8).reshape(10, 20, 3)
@@ -144,8 +144,8 @@ def test_policy_payload_applies_camera_crops_and_flips():
     expected_top = cv2.resize(top_image[2:8, 4:16], (20, 10))[::-1, ::-1]
     np.testing.assert_array_equal(payload["images"]["top"], expected_top)
     assert payload["images"]["top"].shape == top_image.shape
-    np.testing.assert_array_equal(payload["images"]["left_wrist"], left_wrist_image[:, ::-1])
-    np.testing.assert_array_equal(payload["images"]["right_wrist"], right_wrist_image[::-1, ::-1])
+    np.testing.assert_array_equal(payload["images"]["left_wrist"], left_wrist_image)
+    np.testing.assert_array_equal(payload["images"]["right_wrist"], right_wrist_image)
 
 
 def test_merge_drops_stale_actions_and_blends_matching_timesteps():

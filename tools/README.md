@@ -84,6 +84,29 @@ conda activate xtrainer-dev
 原始 `collect_data` 转换为训练数据集的命令与字段约定见
 [`docs/XTRAINER_SMOLVLA.md`](../docs/XTRAINER_SMOLVLA.md#从原始采集数据转换)。
 
+## 校正已有训练数据集的相机方向
+
+对于由 `convert_raw_to_lerobot_2_1.py` 生成的 LeRobot v2.1 视频数据集，可使用以下工具创建一个不修改源数据的
+转换副本。顶视图保持不变，左手腕左右翻转，右手腕上下加左右翻转：
+
+```bash
+python tools/transform_xtrainer_dataset_images.py \
+  --input-root /data/xtrainer_dataset_original \
+  --output-root /data/xtrainer_dataset_camera_aligned
+```
+
+先验证输入数据集与计划操作而不生成输出：
+
+```bash
+python tools/transform_xtrainer_dataset_images.py \
+  --input-root /data/xtrainer_dataset_original \
+  --output-root /data/xtrainer_dataset_camera_aligned \
+  --dry-run
+```
+
+输出目录已存在时，必须显式指定 `--overwrite-output` 才会替换它。该工具要求三个相机字段均为 MP4 视频；对嵌入
+Parquet 的图像数据集会明确报错。
+
 ## 下载 SmolVLA 模型权重
 
 完成环境安装后，从 Hugging Face 或 ModelScope 中选择一个下载入口即可。两个脚本都会下载策略和 VLM 骨干，
