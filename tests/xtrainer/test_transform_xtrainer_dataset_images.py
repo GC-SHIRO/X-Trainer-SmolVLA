@@ -12,7 +12,7 @@ from tools.transform_xtrainer_dataset_images import CAMERA_KEYS, _video_paths, t
     ("camera_key", "expected"),
     [
         (CAMERA_KEYS[0], np.array([[1, 2, 3], [4, 5, 6]])),
-        (CAMERA_KEYS[1], np.array([[3, 2, 1], [6, 5, 4]])),
+        (CAMERA_KEYS[1], np.array([[1, 2, 3], [4, 5, 6]])),
         (CAMERA_KEYS[2], np.array([[6, 5, 4], [3, 2, 1]])),
     ],
 )

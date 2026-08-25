@@ -7,7 +7,7 @@ modified. The output dataset applies the camera transforms needed to match the
 deployment input:
 
 * ``observation.images.top``: unchanged;
-* ``observation.images.left_wrist``: horizontal flip;
+* ``observation.images.left_wrist``: unchanged;
 * ``observation.images.right_wrist``: vertical then horizontal flip (180 deg).
 """
 
@@ -29,7 +29,6 @@ CAMERA_KEYS = (
     "observation.images.right_wrist",
 )
 VIDEO_FILTERS = {
-    "observation.images.left_wrist": "hflip",
     "observation.images.right_wrist": "vflip,hflip",
 }
 
@@ -39,7 +38,7 @@ def transform_frame(camera_key: str, image: np.ndarray) -> np.ndarray:
     if camera_key == "observation.images.top":
         return np.ascontiguousarray(image)
     if camera_key == "observation.images.left_wrist":
-        return np.ascontiguousarray(image[:, ::-1])
+        return np.ascontiguousarray(image)
     if camera_key == "observation.images.right_wrist":
         return np.ascontiguousarray(image[::-1, ::-1])
     raise KeyError(f"Unsupported camera key: {camera_key}")
@@ -155,7 +154,7 @@ def transform_dataset(
     episode_count = len(videos[CAMERA_KEYS[0]])
     if dry_run:
         print(f"Validated {episode_count} episodes in {source_root}")
-        print("Would copy the dataset, preserve top videos, hflip left videos, and rotate right videos 180 degrees.")
+        print("Would copy the dataset, preserve top and left videos, and rotate right videos 180 degrees.")
         return
 
     _prepare_output(output_root, overwrite=overwrite_output)
@@ -166,7 +165,7 @@ def transform_dataset(
             _run_ffmpeg(destination, destination, video_filter, crf, preset)
 
     print(f"Created transformed dataset: {output_root}")
-    print(f"Episodes: {episode_count}; top=unchanged, left=hflip, right=vflip+hflip")
+    print(f"Episodes: {episode_count}; top=unchanged, left=unchanged, right=vflip+hflip")
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:

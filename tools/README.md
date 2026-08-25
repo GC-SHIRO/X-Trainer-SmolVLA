@@ -87,7 +87,7 @@ conda activate xtrainer-dev
 ## 校正已有训练数据集的相机方向
 
 对于由 `convert_raw_to_lerobot_2_1.py` 生成的 LeRobot v2.1 视频数据集，可使用以下工具创建一个不修改源数据的
-转换副本。顶视图保持不变，左手腕左右翻转，右手腕上下加左右翻转：
+转换副本。顶视图和左手腕保持不变，右手腕上下加左右翻转：
 
 ```bash
 python tools/transform_xtrainer_dataset_images.py \
