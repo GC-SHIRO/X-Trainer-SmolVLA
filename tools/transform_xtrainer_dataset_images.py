@@ -48,7 +48,10 @@ def transform_frame(camera_key: str, image: np.ndarray) -> np.ndarray:
 def _video_paths(root: Path, camera_key: str) -> dict[Path, Path]:
     videos_root = root / "videos"
     paths = sorted(videos_root.glob(f"chunk-*/{camera_key}/episode_*.mp4"))
-    return {path.relative_to(videos_root): path for path in paths}
+    return {
+        path.relative_to(videos_root).parent.parent / path.name: path
+        for path in paths
+    }
 
 
 def _validate_source(root: Path) -> dict[str, dict[Path, Path]]:
@@ -158,8 +161,8 @@ def transform_dataset(
     _prepare_output(output_root, overwrite=overwrite_output)
     shutil.copytree(source_root, output_root)
     for camera_key, video_filter in VIDEO_FILTERS.items():
-        for relative_path in videos[camera_key]:
-            destination = output_root / "videos" / relative_path
+        for source_video in videos[camera_key].values():
+            destination = output_root / "videos" / source_video.relative_to(source_root / "videos")
             _run_ffmpeg(destination, destination, video_filter, crf, preset)
 
     print(f"Created transformed dataset: {output_root}")
