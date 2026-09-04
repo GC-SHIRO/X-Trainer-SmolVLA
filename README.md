@@ -1,203 +1,462 @@
-<p align="center">
-  <img alt="LeRobot, Hugging Face Robotics Library" src="./media/readme/lerobot-logo-thumbnail.png" width="100%">
-</p>
+# X-Trainer SmolVLA：训练、Mock 联调与真机部署
 
-<div align="center">
+版本：V1.0  
+日期：2026-09-04  
+适用代码：`GC-SHIRO/X-Trainer-SmolVLA` `main`
 
-[![Tests](https://github.com/huggingface/lerobot/actions/workflows/latest_deps_tests.yml/badge.svg?branch=main)](https://github.com/huggingface/lerobot/actions/workflows/latest_deps_tests.yml?query=branch%3Amain)
-[![Tests](https://github.com/huggingface/lerobot/actions/workflows/docker_publish.yml/badge.svg?branch=main)](https://github.com/huggingface/lerobot/actions/workflows/docker_publish.yml?query=branch%3Amain)
-[![Python versions](https://img.shields.io/pypi/pyversions/lerobot)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/huggingface/lerobot/blob/main/LICENSE)
-[![Status](https://img.shields.io/pypi/status/lerobot)](https://pypi.org/project/lerobot/)
-[![Version](https://img.shields.io/pypi/v/lerobot)](https://pypi.org/project/lerobot/)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.1-ff69b4.svg)](https://github.com/huggingface/lerobot/blob/main/CODE_OF_CONDUCT.md)
-[![Discord](https://img.shields.io/badge/Discord-Join_Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/q8Dzzpym3f)
+> 本 README 按 X-Trainer Pi0.5 手册的端到端标准整理。所有路径、设备序列号和任务文本应按实际环境替换；未在本机实测的结果不应视为验收结论。
 
-</div>
+本文说明如何使用 X-trainer 双臂机器人采集的数据微调标准 SmolVLA 策略，并完成 Mock Policy 联调和
+真机部署。原始采集数据可先转换为本项目训练所需的 LeRobot Dataset v2.1；训练本身复用现有的
+`lerobot-train` 训练循环和只读 v2.1 适配器，不会改写转换完成的数据集。
 
-**LeRobot** aims to provide models, datasets, and tools for real-world robotics in PyTorch. The goal is to lower the barrier to entry so that everyone can contribute to and benefit from shared datasets and pretrained models.
+完整流程为：准备 v2.1 数据集 → 全量或 LoRA 训练 → Mock Policy 联调机器人端 → 启动真实策略服务 →
+小步执行真机任务。本文不包含代码单元测试或模块测试。
 
-🤗 A hardware-agnostic, Python-native interface that standardizes control across diverse platforms, from low-cost arms (SO-100) to humanoids.
+## 环境要求
 
-🤗 A standardized, scalable LeRobotDataset format (Parquet + MP4 or images) hosted on the Hugging Face Hub, enabling efficient storage, streaming and visualization of massive robotic datasets.
-
-🤗 State-of-the-art policies that have been shown to transfer to the real-world ready for training and deployment.
-
-🤗 Comprehensive support for the open-source ecosystem to democratize physical AI.
-
-## Quick Start
-
-LeRobot can be installed directly from PyPI.
+默认运行环境为 Ubuntu 24.04 LTS x86_64，使用 Conda 管理 Python 3.12。仓库提供一键安装脚本，在仓库
+根目录执行：
 
 ```bash
-pip install lerobot
-lerobot-info
+bash tools/install_xtrainer_env.sh
+conda activate xtrainer-smolvla
 ```
 
-> [!IMPORTANT]
-> For detailed installation guide, please see the [Installation Documentation](https://huggingface.co/docs/lerobot/installation).
+脚本默认安装 PyTorch 2.8.0 CUDA 12.8 wheel，以及训练、LoRA、WebSocket 服务、Feetech 夹爪、
+Intel RealSense 和原始数据转换依赖（Datasets、PyArrow、OpenCV、Pillow、PyAV、FFmpeg）。GPU 模式要求
+NVIDIA 驱动不低于 `570.26`，但不要求预装系统 CUDA Toolkit。
+脚本不会安装显卡驱动、下载模型或数据集，也不会修改串口和 USB 权限。
 
-## Robots & Control
+安装默认使用国内镜像完成 Ubuntu、Conda、PyPI 和 PyTorch 依赖下载，并且不会永久修改系统源配置。如需改用
+官方源，执行 `bash tools/install_xtrainer_env.sh --source official`。
 
-<div align="center">
-  <img src="./media/readme/robots_control_video.webp" width="640px" alt="Reachy 2 Demo">
-</div>
-
-LeRobot provides a unified `Robot` class interface that decouples control logic from hardware specifics. It supports a wide range of robots and teleoperation devices.
-
-```python
-from lerobot.robots.myrobot import MyRobot
-
-# Connect to a robot
-robot = MyRobot(config=...)
-robot.connect()
-
-# Read observation and send action
-obs = robot.get_observation()
-action = model.select_action(obs)
-robot.send_action(action)
-```
-
-**Supported Hardware:** SO100, LeKiwi, Koch, HopeJR, OMX, EarthRover, Reachy2, Gamepads, Keyboards, Phones, OpenARM, Unitree G1, reBot B601.
-
-While these devices are natively integrated into the LeRobot codebase, the library is designed to be extensible. You can easily implement the Robot interface to utilize LeRobot's data collection, training, and visualization tools for your own custom robot.
-
-For detailed hardware setup guides, see the [Hardware Documentation](https://huggingface.co/docs/lerobot/integrate_hardware).
-
-## LeRobot Dataset
-
-To solve the data fragmentation problem in robotics, we utilize the **LeRobotDataset** format.
-
-- **Structure:** Synchronized MP4 videos (or images) for vision and Parquet files for state/action data.
-- **HF Hub Integration:** Explore thousands of robotics datasets on the [Hugging Face Hub](https://huggingface.co/lerobot).
-- **Tools:** Seamlessly delete episodes, split by indices/fractions, add/remove features, and merge multiple datasets.
-
-```python
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-# Load a dataset from the Hub
-dataset = LeRobotDataset("lerobot/aloha_mobile_cabinet")
-
-# Access data (automatically handles video decoding)
-episode_index=0
-print(f"{dataset[episode_index]['action'].shape=}\n")
-```
-
-Learn more about it in the [LeRobotDataset Documentation](https://huggingface.co/docs/lerobot/lerobot-dataset-v3).
-
-## SoTA Models
-
-LeRobot implements state-of-the-art policies in pure PyTorch, covering Imitation Learning, Reinforcement Learning, Vision-Language-Action (VLA) models, World Models, and Reward Models, with more coming soon. It also provides you with the tools to instrument and inspect your training process.
-
-<p align="center">
-  <img alt="Gr00t Architecture" src="./media/readme/VLA_architecture.jpg" width="640px">
-</p>
-
-Training a policy is as simple as running a script configuration:
+只需要运行 Mock Policy 或无 GPU 的机器人端时，可以安装 CPU 环境：
 
 ```bash
-lerobot-train \
-  --policy.type=act \
-  --dataset.repo_id=lerobot/aloha_mobile_cabinet
+bash tools/install_xtrainer_env.sh --cpu-only
+conda activate xtrainer-smolvla
 ```
 
-| Category                   | Models                                                                                                                                                                                                                                                                                                                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Imitation Learning**     | [ACT](./docs/source/policy_act_README.md), [Diffusion](./docs/source/policy_diffusion_README.md), [VQ-BeT](./docs/source/policy_vqbet_README.md), [Multitask DiT Policy](./docs/source/policy_multi_task_dit_README.md)                                                                                                                                                                    |
-| **Reinforcement Learning** | [HIL-SERL](./docs/source/hilserl.mdx), [TDMPC](./docs/source/policy_tdmpc_README.md) & QC-FQL (coming soon)                                                                                                                                                                                                                                                                                |
-| **VLAs Models**            | [Pi0](./docs/source/pi0.mdx), [Pi0Fast](./docs/source/pi0fast.mdx), [Pi0.5](./docs/source/pi05.mdx), [GR00T N1.7](./docs/source/policy_groot_README.md), [SmolVLA](./docs/source/policy_smolvla_README.md), [XVLA](./docs/source/xvla.mdx), [EO-1](./docs/source/eo1.mdx), [MolmoAct2](./docs/source/molmoact2.mdx), [WALL-OSS](./docs/source/walloss.mdx), [EVO1](./docs/source/evo1.mdx) |
-| **World Models**           | [VLA-JEPA](./docs/source/vla_jepa.mdx), [LingBot-VA](./docs/source/lingbot_va.mdx), [FastWAM](./docs/source/fastwam.mdx)                                                                                                                                                                                                                                                                   |
-| **Reward Models**          | [SARM](./docs/source/sarm.mdx), [TOPReward](./docs/source/topreward.mdx), [Robometer](./docs/source/robometer.mdx)                                                                                                                                                                                                                                                                         |
+全部选项和环境边界见 [`tools/README.md`](tools/README.md)。训练和真实 SmolVLA 策略推理建议使用默认
+CUDA 环境；CPU 模式不适合实际训练，也不建议用于有实时性要求的模型推理。
 
-Similarly to the hardware, you can easily implement your own policy & leverage LeRobot's data collection, training, and visualization tools, and share your model to the HF Hub.
+## 下载基础模型权重
 
-For detailed policy setup guides, see the [Policy Documentation](https://huggingface.co/docs/lerobot/bring_your_own_policies). For GPU/RAM requirements and expected training time per policy, see the [Compute Hardware Guide](https://huggingface.co/docs/lerobot/hardware_guide).
-
-## Inference & Evaluation
-
-Evaluate your policies in simulation or on real hardware using the unified evaluation script. LeRobot supports standard benchmarks like **LIBERO**, **MetaWorld** and more to come.
+安装环境后，可以选择 Hugging Face 或 ModelScope。下载脚本会同时下载策略 `lerobot/smolvla_base` 和训练时必需的
+视觉语言骨干 `SmolVLM2-500M-Video-Instruct`：
 
 ```bash
-# Evaluate a policy on the LIBERO benchmark
-lerobot-eval \
-  --policy.path=lerobot/pi0_libero_finetuned \
-  --env.type=libero \
-  --env.task=libero_object \
-  --eval.n_episodes=10
+# Hugging Face
+bash tools/download_smolvla_weights_hf.sh
+
+# 或者使用 ModelScope
+bash tools/download_smolvla_weights_modelscope.sh
 ```
 
-Learn how to implement your own simulation environment or benchmark and distribute it from the HF Hub by following the [EnvHub Documentation](https://huggingface.co/docs/lerobot/envhub).
+默认目录为 `models/smolvla_base` 和 `models/smolvlm2_500m_video_instruct`。离线部署时，将前者传给
+`serve_policy.py --checkpoint models/smolvla_base`。自定义模型 ID、保存目录、revision 和 Conda 环境名的方法见
+[`tools/README.md`](tools/README.md)。LoRA adapter 只包含增量参数，因此部署 LoRA 前也必须准备基础模型。
 
-### X-trainer SmolVLA
+全量训练和 LoRA 启动脚本会在新训练时自动检查两个目录中的 `config.json`。文件存在时，脚本会同时传入本地策略和
+本地 VLM 骨干路径，并让 tokenizer 使用同一份本地 VLM，不会访问 Hugging Face。断点续训不会使用这个自动覆盖，
+始终以 checkpoint 保存的策略配置为准。
 
-For the X-trainer dual-arm setup, see the [training, Mock integration, and real-robot deployment guide](./docs/XTRAINER_SMOLVLA.md).
-Ubuntu 24.04 Conda environment installation is documented in [`tools/README.md`](./tools/README.md).
+## 从原始采集数据转换
 
-### Third-Party Hardware
+原始采集目录应按 episode 组织，并在每个 episode 中包含三路图像与同名帧号的观测文件：
 
-Beyond the natively supported hardware, the community maintains a growing ecosystem of plugins for other robots, teleoperators, cameras, and sensors - UFACTORY xArm, Universal Robots UR5e, Franka, AgileX Piper, Trossen WidowX, ARX5, I2RT YAM, GELLO, SpaceMouse, Meta Quest, ROS 2 bridges, tactile and depth cameras, and more.
+```text
+collect_data/
+└── <episode_id>/
+    ├── topImg/<frame_id>.jpg
+    ├── leftImg/<frame_id>.jpg
+    ├── rightImg/<frame_id>.jpg
+    └── observation/<frame_id>.pkl
+```
 
-Plugins are auto-discovered by package name: LeRobot imports any installed package prefixed with `lerobot_robot_`, `lerobot_teleoperator_`, or `lerobot_camera_`. Install one and use the `type` it registers straight from the CLI:
+每个 `.pkl` 必须包含 14 维 `joint_positions`（状态）和 14 维 `control`（动作）。在已激活的一键环境中执行：
 
 ```bash
-pip install lerobot_robot_<name> lerobot_teleoperator_<name>
-
-lerobot-record \
-  --robot.type=<robot_name> \
-  --teleop.type=<teleoperator_name> \
-  --dataset.repo_id=${HF_USER}/my-dataset
+python scripts/xtrainer/convert_raw_to_lerobot_2_1.py \
+  --raw-root /data/xtrainer/collect_data \
+  --output-root /data/xtrainer/my_xtrainer_dataset \
+  --task "将试管放入试管架" \
+  --fps 30 \
+  --use-videos \
+  --overwrite-output
 ```
 
-Browse the full list in the [Third-Party Robots & Teleoperators](https://huggingface.co/docs/lerobot/main/third_party_robots) and [Third-Party Cameras & Sensors](https://huggingface.co/docs/lerobot/main/third_party_sensors) documentation.
+转换器仅保留 state、action 和三路图像都存在且可读取的帧，默认跳过坏帧；`--fail-on-bad-frames` 可改为遇到
+坏帧立即停止。`--overwrite-output` 会递归删除已有的非空输出目录，必须只指向可安全替换的目标目录，不能指向
+原始采集目录。默认 MP4 视频输出与训练配置兼容；`--no-videos` 只适合转换调试，不能通过本项目的标准 v2.1
+视频校验或 SmolVLA 训练。
 
-## Resources
+转换后先完整校验，再启动训练：
 
-- **[Documentation](https://huggingface.co/docs/lerobot/index):** The complete guide to tutorials & API.
-- **[Chinese Tutorials: LeRobot+SO-ARM101中文教程-同济子豪兄](https://zihao-ai.feishu.cn/wiki/space/7589642043471924447)** Detailed doc for assembling, teleoperate, dataset, train, deploy. Verified by Seed Studio and 5 global hackathon players.
-- **[Discord](https://discord.gg/q8Dzzpym3f):** Join the `LeRobot` server to discuss with the community.
-- **[X](https://x.com/LeRobotHF):** Follow us on X to stay up-to-date with the latest developments.
-- **[Robot Learning Tutorial](https://huggingface.co/spaces/lerobot/robot-learning-tutorial):** A free, hands-on course to learn robot learning using LeRobot.
-- **[T-Shirt Folding Experiment](https://huggingface.co/spaces/lerobot/robot-folding):** An end-to-end demonstration of folding t-shirts with LeRobot.
-- **[LeLab](https://github.com/huggingface/leLab):** A web interface for LeRobot — teleoperate, calibrate, record datasets, replay, and train your SO arm from the browser, no CLI required.
-
-## Citation
-
-If you use LeRobot in your project, please cite the GitHub repository to acknowledge the ongoing development and contributors:
-
-```bibtex
-@misc{cadene2024lerobot,
-    author = {Cadene, Remi and Alibert, Simon and Soare, Alexander and Gallouedec, Quentin and Zouitine, Adil and Palma, Steven and Kooijmans, Pepijn and Aractingi, Michel and Shukor, Mustafa and Aubakirova, Dana and Russi, Martino and Capuano, Francesco and Pascal, Caroline and Choghari, Jade and Meftah, Khalil and Ellerbach, Maxime and Moss, Jess and Wolf, Thomas},
-    title = {LeRobot: State-of-the-art Machine Learning for Real-World Robotics in Pytorch},
-    howpublished = "\url{https://github.com/huggingface/lerobot}",
-    year = {2024}
-}
+```bash
+python scripts/xtrainer/validate_dataset_v21.py \
+  --root /data/xtrainer/my_xtrainer_dataset \
+  --all-episodes
 ```
 
-If you are referencing our research or the academic paper, please also cite our ICLR publication:
+## 数据集目录与契约
 
-<details>
-<summary><b>ICLR 2026 Paper</b></summary>
+传给启动脚本的数据集根目录必须符合以下 LeRobot v2.1 结构：
 
-```bibtex
-@inproceedings{cadenelerobot,
-  title={LeRobot: An Open-Source Library for End-to-End Robot Learning},
-  author={Cadene, Remi and Alibert, Simon and Capuano, Francesco and Aractingi, Michel and Zouitine, Adil and Kooijmans, Pepijn and Choghari, Jade and Russi, Martino and Pascal, Caroline and Palma, Steven and Shukor, Mustafa and Moss, Jess and Soare, Alexander and Aubakirova, Dana and Lhoest, Quentin and Gallou\'edec, Quentin and Wolf, Thomas},
-  booktitle={The Fourteenth International Conference on Learning Representations},
-  year={2026},
-  url={https://arxiv.org/abs/2602.22818}
-}
+```text
+my_xtrainer_dataset/
+├── meta/
+│   ├── info.json
+│   ├── stats.json
+│   ├── tasks.jsonl
+│   └── episodes.jsonl
+├── data/chunk-000/episode_000000.parquet
+└── videos/chunk-000/
+    ├── observation.images.top/episode_000000.mp4
+    ├── observation.images.left_wrist/episode_000000.mp4
+    └── observation.images.right_wrist/episode_000000.mp4
 ```
 
-</details>
+`meta/info.json` 必须声明 `codebase_version: v2.1`、正数 `fps`，并包含以下字段：
 
-## Contribute
+- `observation.state`：14 个 `float32` 值。
+- `action`：14 个 `float32` 值。
+- `observation.images.top`、`observation.images.left_wrist`、
+  `observation.images.right_wrist`：视频字段。
+- `timestamp`、`episode_index`、`frame_index`、`task_index`。
 
-We welcome contributions from everyone in the community! To get started, please read our [CONTRIBUTING.md](https://github.com/huggingface/lerobot/blob/main/CONTRIBUTING.md) guide. Whether you're adding a new feature, improving documentation, or fixing a bug, your help and feedback are invaluable. We're incredibly excited about the future of open-source robotics and can't wait to work with you on what's next—thank you for your support!
+每个 episode 的 Parquet 文件包含上述非图像字段。`task_index` 会通过 `meta/tasks.jsonl` 解析为传给
+SmolVLA 的任务文本。14 维向量顺序固定为：左臂关节 1–6、左夹爪、右臂关节 1–6、右夹爪；夹爪值必须归一化到
+`[0, 1]`。
 
-<p align="center">
-  <img alt="SO101 Video" src="./media/readme/so100_video.webp" width="640px">
-</p>
+基础 SmolVLA checkpoint 使用 `observation.images.camera1`、`camera2`、`camera3` 三个视觉键。X-trainer 的
+全量和 LoRA 配置已内置重命名：`top → camera1`、`left_wrist → camera2`、`right_wrist → camera3`。原始数据集
+文件和字段不会被修改。
 
-<div align="center">
-<sub>Built by the <a href="https://huggingface.co/lerobot">LeRobot</a> team at <a href="https://huggingface.co">Hugging Face</a> with ❤️</sub>
-</div>
+## 单 GPU 全量微调
+
+全量训练启动脚本使用 `configs/xtrainer/train_smolvla.yaml`，其中指定
+`dataset.format_version: v2.1` 和 `lerobot/smolvla_base`。在启动 GPU 训练前，脚本会默认抽样校验
+数据集及视频。
+
+Linux/macOS Shell：
+
+```bash
+bash scripts/xtrainer/train_smolvla.sh \
+  --dataset-root /data/xtrainer/my_xtrainer_dataset \
+  --device cuda \
+  --batch-size 8 \
+  --steps 100000 \
+  --output-dir outputs/train/xtrainer_smolvla_full
+```
+
+`--device` 会覆盖策略的运行设备，可设为 `cuda`、`cuda:0` 或 `cpu`。即使基础模型路径由 YAML 的
+`policy.path` 指定，也可以正常传入该参数；策略配置会在加载基础模型时再应用此覆盖值。
+X-trainer 的全量与 LoRA 配置默认 `push_to_hub: false`，训练 checkpoint 仅写入本地 `outputs/`，无需提供
+Hugging Face `repo_id`。
+
+使用 `--help` 查看启动脚本帮助。脚本会拒绝缺失或不存在的数据集目录；只有在数据集已校验且明确需要
+跳过只读预检时，才使用 `--skip-validation`。
+
+若要执行最小 smoke run，请使用有效的小型数据集并降低 batch size 与 steps：
+
+```bash
+bash scripts/xtrainer/train_smolvla.sh \
+  --dataset-root /data/xtrainer/smoke \
+  --device cuda \
+  --batch-size 1 \
+  --steps 1 \
+  --output-dir outputs/train/xtrainer_smolvla_smoke
+```
+
+该命令仍使用正式训练循环：会完成一次前向传播、反向传播和参数更新，并在训练结束时写入 checkpoint。
+
+## 断点续训
+
+传入 checkpoint 的 `pretrained_model` 目录或其中的 `train_config.json`。断点续训时，checkpoint 中保存的
+训练配置是权威配置；启动脚本仍会应用显式传入的 dataset root、输出目录、device、batch size 与 steps 覆盖值。
+
+```bash
+bash scripts/xtrainer/train_smolvla.sh \
+  --dataset-root /data/xtrainer/my_xtrainer_dataset \
+  --resume-checkpoint outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model \
+  --device cuda
+```
+
+第一版仅支持单个本地 v2.1 数据集。streaming、HF Storage Bucket 和多数据集训练会在启动前被拒绝。如需分布式
+训练，请直接使用仓库已文档化的 `torchrun` 工作流，并保持
+`--dataset.format_version=v2.1` 配置不变。
+
+## LoRA 微调
+
+LoRA 工作流使用 `configs/xtrainer/train_smolvla_lora.yaml` 和
+`scripts/xtrainer/train_smolvla_lora.sh`。一键环境脚本已经包含 PEFT 依赖，无需再次安装。
+
+它从 `lerobot/smolvla_base` 开始训练，并固定使用：
+
+```yaml
+peft:
+  method_type: LORA
+  r: 64
+  lora_alpha: 64
+```
+
+配置不指定 `target_modules`，因此复用 SmolVLA 内置的默认 LoRA 目标模块；EMA 被禁用，且分片并行会被
+训练配置拒绝。LoRA 输出目录独立于全量微调输出目录。
+
+```bash
+bash scripts/xtrainer/train_smolvla_lora.sh \
+  --dataset-root /data/xtrainer/my_xtrainer_dataset \
+  --device cuda \
+  --batch-size 8 \
+  --steps 100000 \
+  --output-dir outputs/train/xtrainer_smolvla_lora
+```
+
+最小 smoke run 可将 `--batch-size` 和 `--steps` 都设为 `1`。成功 checkpoint 的
+`pretrained_model` 目录应包含 `adapter_model.safetensors`、`adapter_config.json`、策略配置和 processor
+文件。该 adapter 不是独立模型：部署或重新加载时必须配合其声明的 `lerobot/smolvla_base` base model。
+
+## 训练输出如何用于部署
+
+全量训练和 LoRA 训练的输出用途不同：
+
+| 训练方式  | 部署时使用的目录                                  | 启动参数           |
+| --------- | ------------------------------------------------- | ------------------ |
+| 全量微调  | checkpoint 下的`pretrained_model`               | `--checkpoint`   |
+| LoRA 微调 | 含`adapter_config.json` 的 `pretrained_model` | `--lora-adapter` |
+
+全量训练示例目录：
+
+```text
+outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model
+```
+
+LoRA adapter 示例目录：
+
+```text
+outputs/train/xtrainer_smolvla_lora/checkpoints/last/pretrained_model
+```
+
+LoRA 加载时，服务会先读取 adapter 配置中记录的基础模型，再把 adapter 叠加到基础模型上。因此 adapter
+目录不能被当作完整模型单独使用。
+
+## 部署结构
+
+推荐把策略服务和机器人控制程序分开运行：
+
+```text
+GPU 策略机                                         机器人控制机
+serve_policy.py  <------ WebSocket / TCP 8000 ----> run_real.py
+    SmolVLA                                           Dobot 双臂
+                                                      Feetech 双夹爪
+                                                      3 台 RealSense
+```
+
+如果只有一台 Ubuntu 机器，也可以在两个终端中运行服务端和机器人端，客户端使用 `--host 127.0.0.1`。
+服务协议没有认证和 TLS，只能放在可信局域网中；不要把 8000 端口直接暴露到公网。
+
+策略与机器人之间的数据契约固定为：
+
+- 输入：`top`、`left_wrist`、`right_wrist` 三路 RGB 图像，14 维机器人状态和任务文本。
+- 输出：14 维绝对目标，顺序为左臂 6 关节、左夹爪、右臂 6 关节、右夹爪。
+- 服务一次可以返回最多 50 步动作；机器人端按 `--action-horizon` 决定实际执行多少步后重新请求。
+- 真实策略服务会在 metadata 中提供 `reset_pose`；机器人端连接后会先平滑移动到该姿态，再开始策略循环。
+
+## 先运行 Mock Policy 联调
+
+Mock Policy 不加载模型，也不需要 checkpoint。它读取机器人端上传的当前 14 维状态，并返回“保持当前姿态”的
+动作块。它适合先确认网络、协议、相机、机械臂和夹爪都能被机器人端正确打开。
+
+注意：Mock 不是纯软件模拟。`run_real.py` 仍然会连接真实 Dobot、Feetech 和 RealSense；添加 `--execute`
+后也会向机器人发送保持姿态命令。首次运行前仍须清空工作区、准备急停并由人员看护。
+
+在服务端启动 Mock Policy：
+
+```bash
+conda activate xtrainer-smolvla
+python scripts/xtrainer/serve_mock_policy.py \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --chunk-size 50
+```
+
+在机器人控制机使用较短时长和保守阈值运行：
+
+```bash
+conda activate xtrainer-smolvla
+python scripts/xtrainer/run_real.py \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --task "保持当前位置，检查部署链路" \
+  --action-horizon 5 \
+  --control-hz 10 \
+  --max-steps 20 \
+  --max-joint-delta 0.03 \
+  --max-gripper-delta 0.02 \
+  --execute
+```
+
+将 `192.168.1.100` 替换为 Mock 服务所在机器的局域网 IP。若不传 `--execute`，程序会主动拒绝进入运动流程；
+这是防止误操作的安全开关，不是预览模式。
+
+Mock metadata 不包含 `reset_pose`，因此 Mock 联调不会主动把机械臂移动到真实策略的复位姿态。它的正确表现是：
+服务持续返回与当前状态相同的目标，机器人没有明显位移，终端没有维度、超时或设备连接错误。
+
+## 真机硬件准备
+
+默认硬件参数与 X-trainer 参考部署保持一致，可以通过 `run_real.py` 参数覆盖：
+
+| 设备           | 默认配置                    |
+| -------------- | --------------------------- |
+| 左 Dobot       | `192.168.5.1`             |
+| 右 Dobot       | `192.168.5.2`             |
+| 左夹爪         | `/dev/ttyUSB1`，ID `21` |
+| 右夹爪         | `/dev/ttyUSB0`，ID `22` |
+| 顶部 RealSense | 序列号`409122273405`      |
+| 左腕 RealSense | 序列号`412622272997`      |
+| 右腕 RealSense | 序列号`412622271417`      |
+
+部署前逐项确认：
+
+1. 机器人控制机能访问两台 Dobot 的 IP，且 IP 没有接反。
+2. 当前用户能访问两个 `/dev/ttyUSB*`；需要时将用户加入 `dialout` 组，重新登录后再运行。
+3. 三台 RealSense 的物理安装位置和序列号一致，尤其不能交换左右腕相机。
+4. 策略机 TCP 8000 端口可由机器人控制机访问，但只允许可信局域网访问。
+5. 双臂周围没有人员、线缆或障碍物，急停可立即触达。
+6. 已先完成 Mock 联调，再切换为真实 checkpoint。
+
+串口设备名可能随 USB 插拔顺序变化。如果现场名称不同，显式传入
+`--left-gripper-port` 和 `--right-gripper-port`，不要仅凭 `/dev/ttyUSB0`、`/dev/ttyUSB1` 的编号猜测左右。
+
+## 启动真实策略服务
+
+### 全量微调 checkpoint
+
+在有 NVIDIA GPU 的策略机上运行：
+
+```bash
+conda activate xtrainer-smolvla
+python scripts/xtrainer/serve_policy.py \
+  --checkpoint outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model \
+  --device cuda \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+### LoRA adapter
+
+部署 LoRA 时，同时给出基础模型和 adapter。`--checkpoint` 可以是 Hugging Face 模型 ID，也可以是已经下载的
+本地基础模型目录：
+
+```bash
+conda activate xtrainer-smolvla
+python scripts/xtrainer/serve_policy.py \
+  --checkpoint lerobot/smolvla_base \
+  --lora-adapter outputs/train/xtrainer_smolvla_lora/checkpoints/last/pretrained_model \
+  --device cuda \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+服务启动时会加载策略和 processor，并默认执行一次 warmup。只有在明确不需要 warmup 时才使用
+`--no-warmup`。服务正常运行后保持该终端不要退出。
+
+## 启动真机任务
+
+先确认服务端已经启动，再在机器人控制机执行。首次使用真实策略时，建议保持短动作块、低步数和严格的增量限制：
+
+```bash
+conda activate xtrainer-smolvla
+python scripts/xtrainer/run_real.py \
+  --host 192.168.1.100 \
+  --port 8000 \
+  --task "将桌面上的方块放入收纳盒" \
+  --left-robot-ip 192.168.5.1 \
+  --right-robot-ip 192.168.5.2 \
+  --left-gripper-port /dev/ttyUSB1 \
+  --right-gripper-port /dev/ttyUSB0 \
+  --camera-top-serial 409122273405 \
+  --camera-left-wrist-serial 412622272997 \
+  --camera-right-wrist-serial 412622271417 \
+  --action-horizon 5 \
+  --control-hz 10 \
+  --max-steps 100 \
+  --max-joint-delta 0.03 \
+  --max-gripper-delta 0.02 \
+  --max-delta-per-step 0.02 \
+  --execute
+```
+
+`--host` 是策略服务所在机器的局域网 IP；只有服务和机器人控制程序在同一台机器上运行时才使用
+`127.0.0.1`。以下参数决定首次真机运行的速度和动作范围：
+
+| 参数                     | 示例值       | 作用                                                                                           |
+| ------------------------ | ------------ | ---------------------------------------------------------------------------------------------- |
+| `--action-horizon`     | `5`        | 每次从服务端动作块中实际消费的步数；值小会更频繁地重新观测与请求策略。                         |
+| `--control-hz`         | `10`       | 客户端下发动作频率，`10` 表示约每 100 ms 一步。                                              |
+| `--max-steps`          | `100`      | 本次任务最多执行的控制步数；以 10 Hz 运行约为 10 秒。                                          |
+| `--max-joint-delta`    | `0.03`     | 单步关节目标相对当前状态的最大变化量，单位为弧度。                                             |
+| `--max-gripper-delta`  | `0.02`     | 单步夹爪归一化目标的最大变化量，范围为`0..1`。                                               |
+| `--max-delta-per-step` | `0.02`     | 对最终准备下发的策略动作再做一次逐维限幅；`<=0` 时关闭。它是额外保护，不替代关节和夹爪限幅。 |
+| `--ramp-step`          | 默认`0.01` | 自动 reset 时每次平滑插值的关节最大变化量，单位为弧度。                                        |
+| `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数。                                                                    |
+| `--execute`            | 必填         | 显式允许机器人使能和下发动作；省略时程序会在连接硬件前拒绝执行。                               |
+
+参考仓库的硬件参数别名（`--left-arm-ip`、`--right-arm-ip`、`--top-camera-serial`、
+`--left-wrist-camera-serial`、`--right-wrist-camera-serial`）也可继续使用。预取可用
+`--prefetch-remaining N`（剩余 `N` 步时请求下一块）表达；未设置时沿用
+`--prefetch-threshold` 的比例逻辑。
+
+策略服务端也兼容参考仓库的命名，例如：
+
+```bash
+python scripts/xtrainer/serve_policy.py \
+  --model-path outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model \
+  --device cuda --host 0.0.0.0 --port 8000 --use-length 50
+```
+
+`--use-length 50` 是服务端每次生成的动作数；客户端的 `--action-horizon 5` 仍只会采用其中前
+5 步。因此在 20 Hz 下，`--max-steps 100` 会在约 5 秒后正常结束，不代表推理只成功了两次。
+
+真实策略服务会把 14 维 `reset_pose` 放进 metadata。机器人端会在机械臂使能后，先按照 `--ramp-step` 和
+`--ramp-max-steps` 平滑移动到该姿态，然后才请求模型动作。默认复位姿态来自 X-trainer 部署配置；如果该姿态
+不适合当前工作台、末端工具或关节限位，应先停止部署并修改服务端配置，不能依赖运行时安全阈值替代人工确认。
+首次真实策略运行前，必须先确认 Dobot 能接受该 reset pose；若控制器返回 `-1,{},ServoJ(...)`，立即停止，
+不要通过忽略错误或重复执行命令来继续任务。
+
+确认短流程稳定后，再逐步增加 `--max-steps`、`--action-horizon` 或 `--control-hz`。每次只放宽一项，便于判断
+异常来自模型动作、网络延迟还是硬件控制。
+
+## 常见问题
+
+### 服务端能启动，但机器人端连接失败
+
+确认机器人端的 `--host` 使用策略机的局域网 IP，而不是策略机自己的 `127.0.0.1`；同时检查 TCP 8000
+端口和防火墙。服务端绑定 `0.0.0.0` 只表示监听所有网卡，它不是机器人端应填写的目标地址。
+
+### 训练启动时提示 `policy: Could not decode ... got {'device': 'cuda'}`
+
+这表示当前代码没有把 `--policy.device` 正确延后到基础模型配置加载阶段，不是数据集校验失败。确认仓库包含
+`src/lerobot/configs/parser.py` 的 YAML `policy.path` 二次过滤修复后，保留 `--device cuda` 原样重试即可。
+
+### 提示状态或动作不是 14 维
+
+训练数据、策略 metadata 和真机客户端必须使用同一套 14 维顺序。不要对某一侧单独调整关节或夹爪排列；
+应从数据集字段、checkpoint 和部署配置一起检查。
+
+### 夹爪无法连接
+
+先确认串口设备名和 ID，没有权限时配置 `dialout` 用户组并重新登录。左右串口接反会使动作发送给错误夹爪，
+因此不应通过反复尝试动作来判断映射。
+
+### RealSense 无法打开
+
+确认三台相机没有被其他程序占用、USB 带宽足够，并核对序列号。顶部、左腕和右腕图像即使分辨率相同也不能
+互换，因为训练数据中的语义键是固定的。
+
+### 真实策略连接后机械臂开始复位
+
+这是 `reset_pose` metadata 的预期行为，不代表模型已经开始执行任务。如果实际复位方向或姿态不安全，应立即
+急停并检查左右臂映射、关节单位和复位值，不能继续等待策略自行纠正。
