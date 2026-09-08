@@ -11,6 +11,14 @@ def test_hardware_check_requires_explicit_motion_confirmation():
     _validate_args(parse_args(["--execute"]))
 
 
+def test_hardware_check_defaults_to_xtrainer_frequency():
+    args = parse_args([])
+
+    assert args.control_hz == pytest.approx(30.0)
+    assert args.camera_warmup_frames == 10
+    assert np.isinf(args.max_gripper_delta)
+
+
 def test_gripper_check_advances_in_bounded_steps():
     class FakeEnvironment:
         def __init__(self):

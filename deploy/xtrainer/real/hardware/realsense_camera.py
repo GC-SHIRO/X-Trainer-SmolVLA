@@ -22,7 +22,7 @@ class XTrainerRealSenseCameraConfig:
     width: int = 640
     height: int = 480
     fps: int = 30
-    warmup_frames: int = 30
+    warmup_frames: int = 10
 
 
 DEFAULT_XTRAINER_CAMERA_CONFIGS: dict[str, XTrainerRealSenseCameraConfig] = {
@@ -88,7 +88,11 @@ class XTrainerRealSenseCamera:
     def read_rgb(self) -> np.ndarray:
         if self._camera is None:
             raise ConnectionError("RealSense camera is not connected")
-        image = np.asarray(self._camera.read())
+        # LeRobot's RealSense backend already owns a background capture thread.
+        # Peeking that buffer keeps policy-observation assembly from blocking the
+        # real-time control loop on three sequential hardware reads.
+        read_latest = getattr(self._camera, "read_latest", None)
+        image = np.asarray(read_latest(max_age_ms=500) if callable(read_latest) else self._camera.read())
         if image.ndim != 3 or image.shape[2] != 3:
             raise RuntimeError(f"RealSense RGB frame must be HxWx3, got {image.shape}")
         if image.dtype != np.uint8:
@@ -119,7 +123,7 @@ def build_xtrainer_cameras(
     width: int = 640,
     height: int = 480,
     fps: int = 30,
-    warmup_frames: int = 30,
+    warmup_frames: int = 10,
 ) -> dict[str, XTrainerRealSenseCamera]:
     configs = {
         "top": XTrainerRealSenseCameraConfig(

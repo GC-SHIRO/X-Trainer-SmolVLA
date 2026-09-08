@@ -61,10 +61,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
-    parser.add_argument("--camera-warmup-frames", type=int, default=30)
-    parser.add_argument("--control-hz", type=float, default=20.0)
+    parser.add_argument("--camera-warmup-frames", type=int, default=10)
+    parser.add_argument("--control-hz", type=float, default=30.0)
     parser.add_argument("--hold-seconds", type=float, default=0.5)
-    parser.add_argument("--max-gripper-delta", type=float, default=0.02)
+    parser.add_argument(
+        "--max-gripper-delta",
+        type=float,
+        default=float("inf"),
+        help="Optional per-step gripper delta; default disables the limit",
+    )
     parser.add_argument("--gripper-open", type=float, default=1.0)
     parser.add_argument("--gripper-close", type=float, default=0.0)
     parser.add_argument(
@@ -120,7 +125,7 @@ def build_environment(args: argparse.Namespace) -> XTrainerRealEnvironment:
         cameras=cameras,
         task="X-trainer sequential hardware check",
         safety=XTrainerSafetyConfig(
-            max_joint_delta_rad=_JOINT_DELTA_RAD,
+            max_joint_delta_rad=float("inf"),
             max_gripper_delta=args.max_gripper_delta,
             ramp_step_rad=float(np.deg2rad(1.0)),
             gripper_update_threshold=0.0,
@@ -147,7 +152,7 @@ def _move_gripper(
     target_value: float,
     hold_seconds: float,
 ) -> np.ndarray:
-    """Move a gripper through the environment's per-step safety limit."""
+    """Move a gripper toward the requested hardware-check target."""
 
     target_value = float(np.clip(target_value, 0.0, 1.0))
     current = np.asarray(current, dtype=np.float64).copy()

@@ -126,7 +126,7 @@ class SmolVLAXTrainerPolicy:
             self._action_log_file = None
 
     def infer(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._validate_payload(payload)
+        self.validate_payload(payload)
         batch = self._build_batch(payload)
 
         with torch.inference_mode():
@@ -144,6 +144,11 @@ class SmolVLAXTrainerPolicy:
 
         self._record_actions(actions_np, payload["images"])
         return {self.action_key: actions_np.astype(np.float32)}
+
+    def validate_payload(self, payload: dict[str, Any]) -> None:
+        """Validate one payload before it enters an async inference queue."""
+
+        self._validate_payload(payload)
 
     def _open_action_log(self) -> None:
         assert self._action_log_path is not None

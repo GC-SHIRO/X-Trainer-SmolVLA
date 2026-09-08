@@ -52,7 +52,7 @@ class XTrainerRealEnvironment:
     cameras: dict[str, Any]
     task: str
     safety: XTrainerSafetyConfig = field(default_factory=XTrainerSafetyConfig)
-    control_hz: float = 20.0
+    control_hz: float = 30.0
     sleep_fn: Any = time.sleep
     _last_state: np.ndarray | None = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
@@ -73,8 +73,8 @@ class XTrainerRealEnvironment:
     def apply_action(self, action: Any, *, pace: bool = True) -> np.ndarray:
         """Validate, limit, and send one action.
 
-        ``pace=False`` lets an external control loop own the monotonic deadline.
-        Smooth reset keeps the default pacing so its interpolation remains safe.
+        ``pace=False`` 允许外部控制循环或平滑复位连续发送动作，
+        避免额外叠加一个控制周期的等待。
         """
 
         action = self._validate_action(action)
@@ -230,22 +230,21 @@ class XTrainerRealEnvironment:
             self.sleep_fn(1.0 / self.control_hz)
 
     def smooth_reset(self, target_state: Any) -> np.ndarray:
-        """Move toward ``target_state`` in bounded increments using ``apply_action``."""
+        """按照 LingBot 的复位方式插值到 ``target_state``。"""
 
         target = self._validate_action(target_state)
         if self._last_state is None:
             self._last_state = self._read_state()
-        current = self._last_state.copy()
-        for _ in range(max(1, self.safety.ramp_max_steps)):
-            delta = target - current
-            if float(np.max(np.abs(delta[np.r_[0:6, 7:13]]))) <= self.safety.ramp_step_rad:
-                return self.apply_action(target)
-            step = current.copy()
-            joint_indices = np.r_[0:6, 7:13]
-            step[joint_indices] = current[joint_indices] + np.clip(
-                delta[joint_indices], -self.safety.ramp_step_rad, self.safety.ramp_step_rad
-            )
-            step[6] = target[6]
-            step[13] = target[13]
-            current = self.apply_action(step).astype(np.float64)
+        start = self._last_state.copy()
+        max_delta = float(np.max(np.abs(target - start)))
+        steps = min(
+            int(np.ceil(max_delta / max(self.safety.ramp_step_rad, 1e-6))),
+            max(1, self.safety.ramp_max_steps),
+        )
+        if steps <= 1:
+            return self.apply_action(target, pace=False)
+
+        current = start
+        for action in np.linspace(start, target, steps):
+            current = self.apply_action(action, pace=False).astype(np.float64)
         return current.astype(np.float32)

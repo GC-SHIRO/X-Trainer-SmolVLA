@@ -19,12 +19,13 @@ network:
 
 xtrainer:
   schema_version: 1
-  control_hz: 20
+  control_hz: 30
   image_size: [640, 480]
   action_dim: 14
   state_dim: 14
   chunk_size: 50
   prefetch_threshold: 0.7
+  observation_hz: 10
   overlap_blend:
     old_weight: 0.3
     new_weight: 0.7
@@ -94,17 +95,16 @@ hardware:
       range: [0.0, 1.0]
 
 safety:
-  max_joint_delta_rad: 0.17
-  max_gripper_delta: 0.05
+  # 默认关闭可选的策略动作整形；如需启用，请在客户端命令行显式设置有限值。
+  # 这些默认值与 run_real.py 保持一致。
+  max_joint_delta_rad: .inf
+  max_gripper_delta: .inf
   ramp_step_rad: 0.01
   ramp_max_steps: 100
-  gripper_update_threshold: 0.02
-  servo_step_limit: 0.9
-  max_switch_delta_rad: 0.12
-  switch_blend_steps: 5
+  gripper_update_threshold: 0.0
   max_delta_per_step_rad: 0.0
-  joint_position_limit_rad: [-6.283185307179586, 6.283185307179586]
+  joint_position_limit_rad: [-.inf, .inf]
+  # 这是夹爪指令的归一化取值域，不属于可选的动作整形。
   gripper_limit: [0.0, 1.0]
   require_finite_actions: true
-  clamp_after_blend: true
   stop_on_policy_error: true
