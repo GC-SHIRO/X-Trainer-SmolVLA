@@ -1,6 +1,7 @@
 # X-trainer 环境安装
 
-本目录提供 Ubuntu 24.04 上的 X-trainer SmolVLA 一键环境安装脚本。默认安装同一个环境中完成原始数据转换、
+本目录提供 Ubuntu（x86_64）上的 X-trainer SmolVLA 一键环境安装脚本，已在 Ubuntu 24.04 LTS 上验证，其他
+Ubuntu LTS 版本同样支持。默认安装同一个环境中完成原始数据转换、
 数据读取、SmolVLA 全量训练、LoRA 训练、策略服务、Mock 链路和真机部署所需的 Python 依赖。
 
 ## 安装前要求
@@ -8,9 +9,9 @@
 默认环境基线：
 
 
-| 项目     | 要求                                                |
-| ---------- | ----------------------------------------------------- |
-| 操作系统 | Ubuntu 24.04 LTS x86_64                             |
+| 项目     | 要求                                                       |
+| ---------- | ------------------------------------------------------------ |
+| 操作系统 | Ubuntu LTS x86_64（基线 Ubuntu 24.04 LTS）                |
 | 环境管理 | Conda（Miniconda 或 Anaconda）                      |
 | Python   | 3.12，由脚本创建                                    |
 | GPU 训练 | NVIDIA GPU，驱动`>= 570.26`，并且 `nvidia-smi` 可用 |
@@ -38,7 +39,7 @@ bash tools/install_xtrainer_env.sh --source official
 
 脚本默认会：
 
-1. 检查 Ubuntu 24.04 x86_64、Conda 和 NVIDIA 驱动。
+1. 检查 Ubuntu x86_64（任何 LTS 版本）、Conda 和 NVIDIA 驱动。
 2. 通过 `apt-get` 安装编译工具、FFmpeg、Git、USB 和 udev 运行库。
 3. 创建或复用 `xtrainer-smolvla` Conda 环境。
 4. 安装 Python 3.12、PyTorch 2.8.0 和 TorchCodec 0.6.0。
