@@ -23,6 +23,7 @@ from scripts.xtrainer.run_real import (
     _policy_payload,
     _rate_limit_action,
     _should_prefetch,
+    _validate_args,
     parse_args,
     run,
     run_control_loop,
@@ -183,13 +184,14 @@ def test_final_rate_limit_runs_after_blending():
     np.testing.assert_allclose(limited, 0.2)
 
 
-def test_cli_uses_planned_camera_defaults_and_reserved_switch():
+def test_cli_uses_planned_camera_defaults_and_latest_mode():
     args = parse_args(["--host", "127.0.0.1"])
 
     assert args.camera_top_serial == "409122273405"
     assert args.camera_left_wrist_serial == "412622272997"
     assert args.camera_right_wrist_serial == "412622271417"
     assert args.prefetch_threshold == pytest.approx(0.7)
+    assert args.async_observation_mode == "latest"
     assert args.observation_similarity_epsilon is None
     assert args.execute is False
     assert args.log_control is False
@@ -210,7 +212,23 @@ def test_cli_accepts_optional_client_control_log_path(tmp_path):
     assert args.control_log_path == log_path
 
 
-def test_cli_accepts_reference_hardware_option_names_and_prefetch_remaining():
+def test_cli_rejects_similarity_filter_in_legacy_mode():
+    args = parse_args(
+        [
+            "--host",
+            "127.0.0.1",
+            "--async-observation-mode",
+            "legacy",
+            "--observation-similarity-epsilon",
+            "0.01",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="requires latest mode"):
+        _validate_args(args)
+
+
+def test_cli_accepts_reference_hardware_option_names_and_threshold_prefetch():
     args = parse_args(
         [
             "--host",
@@ -225,8 +243,8 @@ def test_cli_accepts_reference_hardware_option_names_and_prefetch_remaining():
             "left",
             "--right-wrist-camera-serial",
             "right",
-            "--prefetch-remaining",
-            "2",
+            "--prefetch-threshold",
+            "0.4",
         ]
     )
 
@@ -237,9 +255,9 @@ def test_cli_accepts_reference_hardware_option_names_and_prefetch_remaining():
         "left",
         "right",
     )
-    assert args.prefetch_remaining == 2
-    assert _should_prefetch(2, 5, 0.7, args.prefetch_remaining)
-    assert not _should_prefetch(3, 5, 0.7, args.prefetch_remaining)
+    assert args.prefetch_threshold == pytest.approx(0.4)
+    assert _should_prefetch(2, 5, args.prefetch_threshold)
+    assert not _should_prefetch(3, 5, args.prefetch_threshold)
 
 
 def test_control_loop_blends_returned_prefetch_and_keeps_one_request_in_flight():
@@ -333,6 +351,8 @@ def test_prefetch_timeout_closes_policy_and_hardware():
             "0.5",
             "--request-timeout",
             "0.001",
+            "--async-observation-mode",
+            "legacy",
         ]
     )
     policy = MockPolicy([np.zeros((2, 14))], hang_after=1)
@@ -376,6 +396,8 @@ def test_run_applies_reset_pose_from_policy_metadata_and_cleans_up():
             "1000",
             "--prefetch-threshold",
             "0",
+            "--async-observation-mode",
+            "legacy",
         ]
     )
     policy = MockPolicy([np.zeros((1, 14))], metadata=metadata)

@@ -179,17 +179,9 @@ def _should_prefetch(
     queue_size: int,
     action_horizon: int,
     threshold: float,
-    remaining: int | None = None,
 ) -> bool:
-    """Return whether to request the next chunk.
+    """Return whether the remaining action ratio has reached the threshold."""
 
-    ``remaining`` is the reference repository's more explicit prefetch
-    setting.  When omitted, retain the existing fractional-threshold
-    behaviour so current launch commands do not change their timing.
-    """
-
-    if remaining is not None:
-        return queue_size <= remaining
     return threshold > 0 and queue_size / action_horizon <= threshold
 
 
@@ -279,7 +271,6 @@ async def run_control_loop(
     control_hz: float,
     max_steps: int,
     prefetch_threshold: float,
-    prefetch_remaining: int | None = None,
     request_timeout_s: float,
     max_delta_per_step: float,
     control_log: ControlActionLog | None = None,
@@ -340,9 +331,7 @@ async def run_control_loop(
                 action = timed_action.action
 
             queued_action = np.asarray(action, dtype=np.float64).copy()
-            rate_limited_action = _rate_limit_action(
-                queued_action, last_sent_action, max_delta_per_step
-            )
+            rate_limited_action = _rate_limit_action(queued_action, last_sent_action, max_delta_per_step)
             applied_action = environment.apply_action(rate_limited_action, pace=False)
             last_sent_action = np.asarray(applied_action, dtype=np.float64).copy()
             if control_log is not None:
@@ -362,7 +351,6 @@ async def run_control_loop(
                 len(action_queue),
                 action_horizon,
                 prefetch_threshold,
-                prefetch_remaining,
             ):
                 observation_timestep = step + 1
                 _LOGGER.info(
@@ -374,10 +362,10 @@ async def run_control_loop(
                     _request_action_chunk(
                         policy,
                         environment.get_observation(),
-                            action_horizon=action_horizon,
-                            observation_timestep=observation_timestep,
-                            request_timeout_s=request_timeout_s,
-                            control_log=control_log,
+                        action_horizon=action_horizon,
+                        observation_timestep=observation_timestep,
+                        request_timeout_s=request_timeout_s,
+                        control_log=control_log,
                     )
                 )
 
@@ -392,6 +380,150 @@ async def run_control_loop(
         if pending_request is not None:
             pending_request.cancel()
             await asyncio.gather(pending_request, return_exceptions=True)
+
+
+def _result_from_observation_event(event: dict[str, Any], action_horizon: int) -> InferenceResult | None:
+    status = event.get("status")
+    if status in {"similar", "superseded", "duplicate"}:
+        return None
+    if status == "error":
+        raise RuntimeError(f"Async policy inference failed: {event.get('reason', 'unknown error')}")
+    if status != "actions":
+        raise ValueError(f"Unexpected observation result status: {status!r}")
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("Async action result is missing its payload map")
+    try:
+        observation_timestep = int(event["observation_timestep"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Async action result is missing its observation timestep") from exc
+    return InferenceResult(
+        actions=_extract_action_chunk(payload, action_horizon),
+        observation_timestep=observation_timestep,
+    )
+
+
+async def run_async_control_loop(
+    policy: Any,
+    environment: Any,
+    *,
+    action_horizon: int,
+    control_hz: float,
+    max_steps: int,
+    prefetch_threshold: float,
+    request_timeout_s: float,
+    max_delta_per_step: float,
+    control_log: ControlActionLog | None = None,
+    monotonic_fn: Any = time.monotonic,
+    sleep_fn: Any = asyncio.sleep,
+) -> None:
+    """Run the control loop while continuously replacing the pending observation."""
+
+    policy.submit_observation(
+        _policy_payload(environment.get_observation()),
+        observation_timestep=0,
+        must_go=True,
+    )
+    while True:
+        event = await policy.next_observation_event(timeout_s=request_timeout_s)
+        initial_result = _result_from_observation_event(event, action_horizon)
+        if initial_result is not None:
+            break
+    action_queue = _merge_action_queue({}, initial_result, current_timestep=0)
+    if not action_queue:
+        raise RuntimeError("Initial async action chunk is already stale")
+
+    last_sent_action: np.ndarray | None = None
+    fallback_started_at: float | None = None
+    period = 1.0 / control_hz
+    deadline = monotonic_fn()
+
+    for step in range(max_steps):
+        while True:
+            event = policy.get_observation_event_nowait()
+            if event is None:
+                break
+            result = _result_from_observation_event(event, action_horizon)
+            if control_log is not None:
+                control_log.write(
+                    "async_observation_result",
+                    control_timestep=step,
+                    observation_timestep=event.get("observation_timestep"),
+                    observation_id=event.get("observation_id"),
+                    status=event.get("status"),
+                    server_timing=event.get("server_timing"),
+                )
+            if result is None:
+                continue
+            merged = _merge_action_queue(action_queue, result, current_timestep=step)
+            if merged:
+                action_queue = merged
+                fallback_started_at = None
+            else:
+                _LOGGER.info(
+                    "Discarded stale async chunk from observation step %d at control step %d",
+                    result.observation_timestep,
+                    step,
+                )
+
+        timed_action = action_queue.pop(step, None)
+        used_fallback = timed_action is None
+        if timed_action is None:
+            if last_sent_action is None:
+                raise RuntimeError(f"No action available for timestep {step}")
+            action = last_sent_action.copy()
+            if fallback_started_at is None:
+                fallback_started_at = monotonic_fn()
+            elif monotonic_fn() - fallback_started_at >= request_timeout_s:
+                raise TimeoutError("No usable async action chunk arrived before request timeout")
+        else:
+            action = timed_action.action
+
+        queued_action = np.asarray(action, dtype=np.float64).copy()
+        rate_limited_action = _rate_limit_action(queued_action, last_sent_action, max_delta_per_step)
+        applied_action = environment.apply_action(rate_limited_action, pace=False)
+        last_sent_action = np.asarray(applied_action, dtype=np.float64).copy()
+        if control_log is not None:
+            control_log.write(
+                "control_step",
+                control_timestep=step,
+                source_observation_timestep=(
+                    None if timed_action is None else timed_action.observation_timestep
+                ),
+                used_fallback=used_fallback,
+                queued_action=queued_action.tolist(),
+                rate_limited_action=rate_limited_action.tolist(),
+                applied_action=last_sent_action.tolist(),
+            )
+
+        should_submit = used_fallback or _should_prefetch(
+            len(action_queue),
+            action_horizon,
+            prefetch_threshold,
+        )
+        if should_submit:
+            observation_timestep = step + 1
+            observation_id = policy.submit_observation(
+                _policy_payload(environment.get_observation()),
+                observation_timestep=observation_timestep,
+                must_go=used_fallback,
+            )
+            if control_log is not None:
+                control_log.write(
+                    "async_observation_submitted",
+                    observation_id=observation_id,
+                    observation_timestep=observation_timestep,
+                    must_go=used_fallback,
+                    remaining_actions=len(action_queue),
+                )
+
+        deadline += period
+        remaining = deadline - monotonic_fn()
+        if remaining > 0:
+            await sleep_fn(remaining)
+        else:
+            deadline = monotonic_fn()
+    _LOGGER.info("Reached --max-steps=%d; ending the async control loop", max_steps)
 
 
 def _validate_server_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -469,12 +601,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--action-horizon", type=int, default=50)
     parser.add_argument("--control-hz", type=float, default=20.0)
     parser.add_argument("--max-steps", type=int, default=1000)
-    parser.add_argument(
-        "--left-robot-ip", "--left-arm-ip", dest="left_robot_ip", default="192.168.5.1"
-    )
-    parser.add_argument(
-        "--right-robot-ip", "--right-arm-ip", dest="right_robot_ip", default="192.168.5.2"
-    )
+    parser.add_argument("--left-robot-ip", "--left-arm-ip", dest="left_robot_ip", default="192.168.5.1")
+    parser.add_argument("--right-robot-ip", "--right-arm-ip", dest="right_robot_ip", default="192.168.5.2")
     parser.add_argument("--left-gripper-port", default="/dev/ttyUSB1")
     parser.add_argument("--right-gripper-port", default="/dev/ttyUSB0")
     parser.add_argument("--left-gripper-id", type=int, default=21)
@@ -530,13 +658,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--prefetch-threshold", type=float, default=0.7)
     parser.add_argument(
-        "--prefetch-remaining",
-        type=int,
-        default=None,
-        help=(
-            "Request the next chunk when this many actions remain (compatible with the reference "
-            "launcher; overrides --prefetch-threshold when supplied)"
-        ),
+        "--async-observation-mode",
+        choices=("latest", "legacy"),
+        default="latest",
+        help="Inference transport mode; latest is the default and legacy is the rollback path",
     )
     parser.add_argument("--request-timeout", type=float, default=10.0)
     parser.add_argument(
@@ -563,7 +688,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--observation-similarity-epsilon",
         type=float,
         default=None,
-        help="Reserved for a later 12-joint observation similarity filter; currently disabled",
+        help="Optional L2 threshold in radians across the 12 arm joints; latest mode only",
     )
     parser.add_argument(
         "--execute",
@@ -589,8 +714,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(f"Expected positive values for: {', '.join(invalid)}")
     if not 0 <= args.prefetch_threshold <= 1:
         raise ValueError("prefetch_threshold must be in [0, 1]")
-    if args.prefetch_remaining is not None and args.prefetch_remaining < 0:
-        raise ValueError("prefetch_remaining must be non-negative")
+    epsilon = args.observation_similarity_epsilon
+    if epsilon is not None and (not np.isfinite(epsilon) or epsilon < 0):
+        raise ValueError("observation_similarity_epsilon must be finite and non-negative")
+    if args.async_observation_mode == "legacy" and epsilon not in (None, 0):
+        raise ValueError("observation_similarity_epsilon requires latest mode")
     non_negative_values = {
         "camera_warmup_frames": args.camera_warmup_frames,
         "max_joint_delta": args.max_joint_delta,
@@ -613,9 +741,9 @@ async def run(
 ) -> None:
     _validate_args(args)
     if not args.execute:
-        raise RuntimeError("Real-robot motion is disabled; pass --execute only after completing safety checks")
-    if args.observation_similarity_epsilon is not None:
-        _LOGGER.warning("--observation-similarity-epsilon is reserved and has no effect in this version")
+        raise RuntimeError(
+            "Real-robot motion is disabled; pass --execute only after completing safety checks"
+        )
 
     policy = policy or XTrainerWebSocketPolicyClient(f"http://{args.host}:{args.port}")
     active_environment = environment
@@ -626,6 +754,8 @@ async def run(
     try:
         metadata = await policy.connect()
         policy_metadata = _validate_server_metadata(metadata)
+        if args.async_observation_mode == "latest":
+            await policy.start_async(args.observation_similarity_epsilon)
         reset_pose = _metadata_reset_pose(policy_metadata)
         active_environment = active_environment or build_environment(args)
 
@@ -635,14 +765,14 @@ async def run(
             active_environment.smooth_reset(reset_pose)
         await policy.reset()
 
-        await run_control_loop(
+        control_loop = run_async_control_loop if args.async_observation_mode == "latest" else run_control_loop
+        await control_loop(
             policy,
             active_environment,
             action_horizon=args.action_horizon,
             control_hz=args.control_hz,
             max_steps=args.max_steps,
             prefetch_threshold=args.prefetch_threshold,
-            prefetch_remaining=args.prefetch_remaining,
             request_timeout_s=args.request_timeout,
             max_delta_per_step=args.max_delta_per_step,
             control_log=control_log,
