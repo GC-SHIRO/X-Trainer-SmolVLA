@@ -19,7 +19,7 @@ network:
 
 xtrainer:
   schema_version: 1
-  control_hz: 20
+  control_hz: 30
   image_size: [640, 480]
   action_dim: 14
   state_dim: 14
@@ -94,17 +94,13 @@ hardware:
       range: [0.0, 1.0]
 
 safety:
-  max_joint_delta_rad: 0.17
-  max_gripper_delta: 0.05
+  max_joint_delta_rad: .inf
+  max_gripper_delta: .inf
   ramp_step_rad: 0.01
   ramp_max_steps: 100
-  gripper_update_threshold: 0.02
-  servo_step_limit: 0.9
-  max_switch_delta_rad: 0.12
-  switch_blend_steps: 5
+  gripper_update_threshold: 0.0
   max_delta_per_step_rad: 0.0
-  joint_position_limit_rad: [-6.283185307179586, 6.283185307179586]
+  joint_position_limit_rad: [-.inf, .inf]
   gripper_limit: [0.0, 1.0]
   require_finite_actions: true
-  clamp_after_blend: true
   stop_on_policy_error: true

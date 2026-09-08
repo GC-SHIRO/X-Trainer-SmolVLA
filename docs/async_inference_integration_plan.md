@@ -63,7 +63,7 @@
 
 | 能力 | 官方路线 A（async_inference） | 官方路线 B（RTC 引擎） | 你的 `run_real.py` 现状 | 差距 |
 |---|---|---|---|---|
-| 控制节拍 | 双线程 + fps 循环 | 主循环 + 后台推理线程 | `asyncio` 单事件循环 + `deadline += period` 节拍（`--control-hz`，默认 20，可调） | 无本质差距；单事件循环内无阻塞点即可 |
+| 控制节拍 | 双线程 + fps 循环 | 主循环 + 后台推理线程 | `asyncio` 单事件循环 + `deadline += period` 节拍（`--control-hz`，默认 30） | 无本质差距；单事件循环内无阻塞点即可 |
 | 预取触发 | `chunk_size_threshold`（g） | 后台线程持续预测，无显式阈值 | `_should_prefetch`：`queue/action_horizon <= prefetch_threshold`（默认 **0.7**，与论文 g 同值） | ✅ 等价 |
 | 飞行中请求 | client 每轮可发新观测（服务端串行取最新） | 常驻推理线程 | **单飞行** `pending_request`（asyncio.Task），完成才合并 | ✅ 更保守；慢服务端下不会堆积请求 |
 | chunk 重叠聚合 | `_aggregate_action_queues` + `aggregate_fn`（默认 0.3/0.7） | TE 融合 + inpainting 前缀对齐 | `_merge_action_queue`：同 timestep 0.3/0.7 加权 | ✅ 与 A 等价；缺 B 的 inpainting |

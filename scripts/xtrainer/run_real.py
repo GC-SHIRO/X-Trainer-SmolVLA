@@ -599,7 +599,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--task", default="pick up the object")
     parser.add_argument("--action-horizon", type=int, default=50)
-    parser.add_argument("--control-hz", type=float, default=20.0)
+    parser.add_argument("--control-hz", type=float, default=30.0)
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--left-robot-ip", "--left-arm-ip", dest="left_robot_ip", default="192.168.5.1")
     parser.add_argument("--right-robot-ip", "--right-arm-ip", dest="right_robot_ip", default="192.168.5.2")

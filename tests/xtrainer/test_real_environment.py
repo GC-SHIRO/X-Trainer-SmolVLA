@@ -293,7 +293,7 @@ def test_smooth_reset_steps_with_control_period():
     env.smooth_reset(target)
 
     assert len(env.left_arm.commands) > 1
-    assert all(seconds == pytest.approx(1 / 20) for seconds in sleeps)
+    assert all(seconds == pytest.approx(1 / 30) for seconds in sleeps)
 
 
 def test_apply_action_can_defer_pacing_to_external_control_loop():

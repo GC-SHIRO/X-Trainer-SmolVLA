@@ -276,7 +276,7 @@ python scripts/xtrainer/serve_mock_policy.py \
   --chunk-size 50
 ```
 
-在机器人控制机使用较短时长和保守阈值运行：
+在机器人控制机使用较短时长运行：
 
 ```bash
 conda activate xtrainer-smolvla
@@ -285,10 +285,7 @@ python scripts/xtrainer/run_real.py \
   --port 8000 \
   --task "保持当前位置，检查部署链路" \
   --action-horizon 5 \
-  --control-hz 10 \
   --max-steps 20 \
-  --max-joint-delta 0.03 \
-  --max-gripper-delta 0.02 \
   --execute
 ```
 
@@ -359,7 +356,7 @@ python scripts/xtrainer/serve_policy.py \
 
 ## 启动真机任务
 
-先确认服务端已经启动，再在机器人控制机执行。首次使用真实策略时，建议保持短动作块、低步数和严格的增量限制：
+先确认服务端已经启动，再在机器人控制机执行。首次使用真实策略时，建议保持短动作块和低步数：
 
 ```bash
 conda activate xtrainer-smolvla
@@ -375,11 +372,7 @@ python scripts/xtrainer/run_real.py \
   --camera-left-wrist-serial 412622272997 \
   --camera-right-wrist-serial 412622271417 \
   --action-horizon 5 \
-  --control-hz 10 \
   --max-steps 100 \
-  --max-joint-delta 0.03 \
-  --max-gripper-delta 0.02 \
-  --max-delta-per-step 0.02 \
   --execute
 ```
 
@@ -389,11 +382,11 @@ python scripts/xtrainer/run_real.py \
 | 参数                     | 示例值       | 作用                                                                                           |
 | ------------------------ | ------------ | ---------------------------------------------------------------------------------------------- |
 | `--action-horizon`     | `5`        | 每次从服务端动作块中实际消费的步数；值小会更频繁地重新观测与请求策略。                         |
-| `--control-hz`         | `10`       | 客户端下发动作频率，`10` 表示约每 100 ms 一步。                                              |
-| `--max-steps`          | `100`      | 本次任务最多执行的控制步数；以 10 Hz 运行约为 10 秒。                                          |
-| `--max-joint-delta`    | `0.03`     | 单步关节目标相对当前状态的最大变化量，单位为弧度。                                             |
-| `--max-gripper-delta`  | `0.02`     | 单步夹爪归一化目标的最大变化量，范围为`0..1`。                                               |
-| `--max-delta-per-step` | `0.02`     | 对最终准备下发的策略动作再做一次逐维限幅；`<=0` 时关闭。它是额外保护，不替代关节和夹爪限幅。 |
+| `--control-hz`         | 默认`30`  | 客户端动作下发频率，与 X-trainer 采集频率一致，约每 33.3 ms 一步。                             |
+| `--max-steps`          | `100`      | 本次任务最多执行的控制步数；以 30 Hz 运行约为 3.3 秒。                                         |
+| `--max-joint-delta`    | 默认关闭   | 可选的单步关节变化限幅；默认无穷大，不改写策略动作。                                           |
+| `--max-gripper-delta`  | 默认关闭   | 可选的单步夹爪变化限幅；默认无穷大。                                                           |
+| `--max-delta-per-step` | 默认关闭   | 可选的最终逐维限幅；默认`0`，不改写策略动作。                                                |
 | `--ramp-step`          | 默认`0.01` | 自动 reset 时每次平滑插值的关节最大变化量，单位为弧度。                                        |
 | `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数。                                                                    |
 | `--async-observation-mode` | 默认`latest` | 推理期间持续提交观测，服务端只保留尚未推理的最新一条；`legacy` 可回退到原单请求模式。        |
@@ -418,7 +411,7 @@ python scripts/xtrainer/serve_policy.py \
 ```
 
 `--use-length 50` 是服务端每次生成的动作数；客户端的 `--action-horizon 5` 仍只会采用其中前
-5 步。因此在 20 Hz 下，`--max-steps 100` 会在约 5 秒后正常结束，不代表推理只成功了两次。
+5 步。因此在 30 Hz 下，`--max-steps 100` 会在约 3.3 秒后正常结束，不代表推理只成功了两次。
 
 真实策略服务会把 14 维 `reset_pose` 放进 metadata。机器人端会在机械臂使能后，先按照 `--ramp-step` 和
 `--ramp-max-steps` 平滑移动到该姿态，然后才请求模型动作。默认复位姿态来自 X-trainer 部署配置；如果该姿态
@@ -426,7 +419,7 @@ python scripts/xtrainer/serve_policy.py \
 首次真实策略运行前，必须先确认 Dobot 能接受该 reset pose；若控制器返回 `-1,{},ServoJ(...)`，立即停止，
 不要通过忽略错误或重复执行命令来继续任务。
 
-确认短流程稳定后，再逐步增加 `--max-steps`、`--action-horizon` 或 `--control-hz`。每次只放宽一项，便于判断
+确认短流程稳定后，再逐步增加 `--max-steps` 或 `--action-horizon`。每次只调整一项，便于判断
 异常来自模型动作、网络延迟还是硬件控制。
 
 ## 常见问题

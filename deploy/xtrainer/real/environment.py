@@ -52,7 +52,7 @@ class XTrainerRealEnvironment:
     cameras: dict[str, Any]
     task: str
     safety: XTrainerSafetyConfig = field(default_factory=XTrainerSafetyConfig)
-    control_hz: float = 20.0
+    control_hz: float = 30.0
     sleep_fn: Any = time.sleep
     _last_state: np.ndarray | None = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
