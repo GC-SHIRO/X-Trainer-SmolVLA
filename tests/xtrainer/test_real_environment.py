@@ -283,17 +283,18 @@ def test_close_failure_does_not_skip_other_resource_cleanup():
     assert env.right_gripper.closed
 
 
-def test_smooth_reset_steps_with_control_period():
+def test_smooth_reset_matches_lingbot_interpolation_without_control_period():
     sleeps = []
     env = make_env(sleep_fn=sleeps.append, safety=XTrainerSafetyConfig(ramp_step_rad=0.5, ramp_max_steps=20))
     env.reset()
     target = np.zeros(14, dtype=np.float32)
     target[0] = 2.0
 
-    env.smooth_reset(target)
+    applied = env.smooth_reset(target)
 
-    assert len(env.left_arm.commands) > 1
-    assert all(seconds == pytest.approx(1 / 30) for seconds in sleeps)
+    assert len(env.left_arm.commands) == 20
+    np.testing.assert_allclose(applied, target)
+    assert sleeps == []
 
 
 def test_apply_action_can_defer_pacing_to_external_control_loop():

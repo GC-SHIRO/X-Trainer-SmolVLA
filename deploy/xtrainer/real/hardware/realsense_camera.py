@@ -22,7 +22,7 @@ class XTrainerRealSenseCameraConfig:
     width: int = 640
     height: int = 480
     fps: int = 30
-    warmup_frames: int = 30
+    warmup_frames: int = 10
 
 
 DEFAULT_XTRAINER_CAMERA_CONFIGS: dict[str, XTrainerRealSenseCameraConfig] = {
@@ -119,7 +119,7 @@ def build_xtrainer_cameras(
     width: int = 640,
     height: int = 480,
     fps: int = 30,
-    warmup_frames: int = 30,
+    warmup_frames: int = 10,
 ) -> dict[str, XTrainerRealSenseCamera]:
     configs = {
         "top": XTrainerRealSenseCameraConfig(

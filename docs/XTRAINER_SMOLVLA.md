@@ -387,8 +387,8 @@ python scripts/xtrainer/run_real.py \
 | `--max-joint-delta`    | 默认关闭   | 可选的单步关节变化限幅；默认无穷大，不改写策略动作。                                           |
 | `--max-gripper-delta`  | 默认关闭   | 可选的单步夹爪变化限幅；默认无穷大。                                                           |
 | `--max-delta-per-step` | 默认关闭   | 可选的最终逐维限幅；默认`0`，不改写策略动作。                                                |
-| `--ramp-step`          | 默认`0.01` | 自动 reset 时每次平滑插值的关节最大变化量，单位为弧度。                                        |
-| `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数。                                                                    |
+| `--ramp-step`          | 默认`0.01` | 自动 reset 时用于计算插值步数的期望变化量，单位为弧度。                                        |
+| `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数；距离较大时仍会在最后一步完整到达目标。                              |
 | `--async-observation-mode` | 默认`latest` | 推理期间持续提交观测，服务端只保留尚未推理的最新一条；`legacy` 可回退到原单请求模式。        |
 | `--observation-similarity-epsilon` | 默认关闭 | 12 个机械臂关节差的 L2 阈值（弧度）；夹爪或任务变化不会被过滤。仅用于 `latest`。              |
 | `--execute`            | 必填         | 显式允许机器人使能和下发动作；省略时程序会在连接硬件前拒绝执行。                               |
@@ -413,8 +413,9 @@ python scripts/xtrainer/serve_policy.py \
 `--use-length 50` 是服务端每次生成的动作数；客户端的 `--action-horizon 5` 仍只会采用其中前
 5 步。因此在 30 Hz 下，`--max-steps 100` 会在约 3.3 秒后正常结束，不代表推理只成功了两次。
 
-真实策略服务会把 14 维 `reset_pose` 放进 metadata。机器人端会在机械臂使能后，先按照 `--ramp-step` 和
-`--ramp-max-steps` 平滑移动到该姿态，然后才请求模型动作。默认复位姿态来自 X-trainer 部署配置；如果该姿态
+真实策略服务会把 14 维 `reset_pose` 放进 metadata。机器人端会在机械臂使能后，按照 LingBot 的方式由当前位置
+生成完整 `linspace` 插值并连续下发，最后一步保证到达目标；插值过程不额外等待 30 Hz 控制周期，然后才请求模型动作。
+`--ramp-step` 用于估算步数，`--ramp-max-steps` 限制最多步数。默认复位姿态来自 X-trainer 部署配置；如果该姿态
 不适合当前工作台、末端工具或关节限位，应先停止部署并修改服务端配置，不能依赖运行时安全阈值替代人工确认。
 首次真实策略运行前，必须先确认 Dobot 能接受该 reset pose；若控制器返回 `-1,{},ServoJ(...)`，立即停止，
 不要通过忽略错误或重复执行命令来继续任务。

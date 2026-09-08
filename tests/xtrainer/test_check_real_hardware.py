@@ -15,6 +15,7 @@ def test_hardware_check_defaults_to_xtrainer_frequency():
     args = parse_args([])
 
     assert args.control_hz == pytest.approx(30.0)
+    assert args.camera_warmup_frames == 10
     assert np.isinf(args.max_gripper_delta)
 
 

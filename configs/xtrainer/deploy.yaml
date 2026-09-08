@@ -94,6 +94,8 @@ hardware:
       range: [0.0, 1.0]
 
 safety:
+  # 默认关闭可选的策略动作整形；如需启用，请在客户端命令行显式设置有限值。
+  # 这些默认值与 run_real.py 保持一致。
   max_joint_delta_rad: .inf
   max_gripper_delta: .inf
   ramp_step_rad: 0.01
@@ -101,6 +103,7 @@ safety:
   gripper_update_threshold: 0.0
   max_delta_per_step_rad: 0.0
   joint_position_limit_rad: [-.inf, .inf]
+  # 这是夹爪指令的归一化取值域，不属于可选的动作整形。
   gripper_limit: [0.0, 1.0]
   require_finite_actions: true
   stop_on_policy_error: true

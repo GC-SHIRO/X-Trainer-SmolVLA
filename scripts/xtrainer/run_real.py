@@ -625,7 +625,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
-    parser.add_argument("--camera-warmup-frames", type=int, default=30)
+    parser.add_argument("--camera-warmup-frames", type=int, default=10)
     parser.add_argument(
         "--max-joint-delta",
         type=float,
