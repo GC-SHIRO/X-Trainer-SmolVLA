@@ -391,14 +391,15 @@ python scripts/xtrainer/run_real.py \
 | `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数；距离较大时仍会在最后一步完整到达目标。                              |
 | `--async-observation-mode` | 默认`latest` | 推理期间持续提交观测，服务端只保留尚未推理的最新一条；`legacy` 可回退到原单请求模式。        |
 | `--observation-similarity-epsilon` | 默认关闭 | 12 个机械臂关节差的 L2 阈值（弧度）；夹爪或任务变化不会被过滤。仅用于 `latest`。              |
+| `--observation-hz` | 默认`10` | 最新观测的最大发送频率；动作下发仍按 `--control-hz` 运行，避免三路图像淹没控制循环。 |
 | `--execute`            | 必填         | 显式允许机器人使能和下发动作；省略时程序会在连接硬件前拒绝执行。                               |
 
 参考仓库的硬件参数别名（`--left-arm-ip`、`--right-arm-ip`、`--top-camera-serial`、
 `--left-wrist-camera-serial`、`--right-wrist-camera-serial`）也可继续使用。预取统一使用
 `--prefetch-threshold`：当剩余动作数与 `action_horizon` 的比例小于或等于该值时请求下一块。
 
-客户端默认启用路线 A 的 `latest` 模式：模型正在计算时，新观测仍可到达服务端；若已有一条尚未开始
-推理的观测，更新的观测会替换它。模型推理本身保持串行。相似过滤默认关闭，需要时显式传入例如
+客户端默认启用路线 A 的 `latest` 模式：模型正在计算时，新观测会按 `--observation-hz` 限速到达
+服务端；若已有一条尚未开始推理的观测，更新的观测会替换它。模型推理本身保持串行。相似过滤默认关闭，需要时显式传入例如
 `--observation-similarity-epsilon 0.01`。该判断不比较图像，机器人关节不变但物体发生移动的任务应
 保持关闭或先做针对性验证。需要回退时使用 `--async-observation-mode legacy`。
 

@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import numpy as np
 
@@ -73,6 +74,7 @@ def test_async_control_loop_executes_initial_timestep_aligned_chunk():
             control_hz=1000,
             max_steps=3,
             prefetch_threshold=0,
+            observation_hz=10,
             request_timeout_s=1,
             max_delta_per_step=0,
         )
@@ -80,3 +82,62 @@ def test_async_control_loop_executes_initial_timestep_aligned_chunk():
 
     assert len(environment.actions) == 3
     np.testing.assert_allclose(environment.actions, 1)
+
+
+def test_async_control_loop_yields_transport_after_observation_overrun():
+    class DeferredPolicy(AsyncPolicy):
+        def submit_observation(self, _payload, *, observation_timestep, must_go=False):
+            if self.next_id == 0:
+                return super().submit_observation(
+                    _payload,
+                    observation_timestep=observation_timestep,
+                    must_go=must_go,
+                )
+
+            observation_id = self.next_id
+            self.next_id += 1
+
+            async def deliver_after_control_yields():
+                await asyncio.sleep(0)
+                self.events.put_nowait(
+                    {
+                        "status": "actions",
+                        "observation_id": observation_id,
+                        "observation_timestep": observation_timestep,
+                        "payload": {"action": np.full((2, 14), 2.0, dtype=np.float32)},
+                    }
+                )
+
+            asyncio.create_task(deliver_after_control_yields())
+            return observation_id
+
+    class SlowObservationEnvironment(Environment):
+        def __init__(self):
+            super().__init__()
+            self.observation_count = 0
+
+        def get_observation(self):
+            self.observation_count += 1
+            if self.observation_count > 1:
+                time.sleep(0.005)
+            return super().get_observation()
+
+    policy = DeferredPolicy()
+    environment = SlowObservationEnvironment()
+
+    asyncio.run(
+        run_async_control_loop(
+            policy,
+            environment,
+            action_horizon=2,
+            control_hz=1000,
+            max_steps=3,
+            prefetch_threshold=0.5,
+            observation_hz=1000,
+            request_timeout_s=1,
+            max_delta_per_step=0,
+        )
+    )
+
+    np.testing.assert_allclose(environment.actions[0], 1)
+    np.testing.assert_allclose(environment.actions[2], 2)
