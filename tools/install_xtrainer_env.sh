@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Complete X-trainer SmolVLA environment for Ubuntu 24.04 x86_64.
+# Complete X-trainer SmolVLA environment for Ubuntu x86_64.
+# Verified on Ubuntu 24.04 LTS; other Ubuntu LTS releases are supported.
 # The default path installs CUDA-enabled training, deployment, and hardware
 # dependencies into an isolated Conda environment.
 
@@ -57,7 +58,8 @@ usage() {
   cat <<'USAGE'
 Usage: bash tools/install_xtrainer_env.sh [OPTIONS]
 
-Create the complete X-trainer SmolVLA environment for Ubuntu 24.04 x86_64.
+Create the complete X-trainer SmolVLA environment for Ubuntu x86_64.
+Verified on Ubuntu 24.04 LTS; other Ubuntu LTS releases are supported.
 By default the script:
   - installs required Ubuntu runtime packages with apt
   - creates or reuses Conda environment "xtrainer-smolvla"
@@ -170,8 +172,26 @@ stage "system preflight"
 [[ -r /etc/os-release ]] || die "cannot read /etc/os-release"
 # shellcheck disable=SC1091
 source /etc/os-release
-[[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "24.04" ]] || \
-  die "expected Ubuntu 24.04, detected ${PRETTY_NAME:-unknown}"
+if [[ "${ID:-}" != "ubuntu" ]]; then
+  die "this installer requires Ubuntu; detected ${PRETTY_NAME:-unknown}"
+fi
+log "detected ${PRETTY_NAME:-unknown}"
+
+# Resolve the Ubuntu codename used for the optional apt mirror sources. Prefer
+# VERSION_CODENAME from /etc/os-release and fall back to a known VERSION_ID map
+# so older releases without that field still work.
+UBUNTU_CODENAME="${VERSION_CODENAME:-}"
+if [[ -z "${UBUNTU_CODENAME}" ]]; then
+  case "${VERSION_ID:-}" in
+    25.04) UBUNTU_CODENAME="plucky" ;;
+    24.10) UBUNTU_CODENAME="oracular" ;;
+    24.04) UBUNTU_CODENAME="noble" ;;
+    23.10) UBUNTU_CODENAME="mantic" ;;
+    22.04) UBUNTU_CODENAME="jammy" ;;
+    20.04) UBUNTU_CODENAME="focal" ;;
+    18.04) UBUNTU_CODENAME="bionic" ;;
+  esac
+fi
 require_command conda
 log "package source: ${SOURCE}"
 log "Python index: ${PIP_INDEX_URL}"
@@ -198,19 +218,24 @@ if [[ "${INSTALL_SYSTEM_PACKAGES}" == "1" ]]; then
   fi
   APT_SOURCE_ARGS=()
   if [[ -n "${APT_SOURCE_URL}" ]]; then
-    APT_SOURCE_FILE="$(mktemp)"
-    trap 'rm -f "${APT_SOURCE_FILE:-}"' EXIT
-    cat >"${APT_SOURCE_FILE}" <<EOF
-deb [arch=amd64] ${APT_SOURCE_URL} noble main restricted universe multiverse
-deb [arch=amd64] ${APT_SOURCE_URL} noble-updates main restricted universe multiverse
-deb [arch=amd64] ${APT_SOURCE_URL} noble-backports main restricted universe multiverse
-deb [arch=amd64] ${APT_SOURCE_URL} noble-security main restricted universe multiverse
+    if [[ -z "${UBUNTU_CODENAME}" ]]; then
+      warn "cannot resolve Ubuntu codename; falling back to the system-configured apt sources"
+      APT_SOURCE_URL=""
+    else
+      APT_SOURCE_FILE="$(mktemp)"
+      trap 'rm -f "${APT_SOURCE_FILE:-}"' EXIT
+      cat >"${APT_SOURCE_FILE}" <<EOF
+deb [arch=amd64] ${APT_SOURCE_URL} ${UBUNTU_CODENAME} main restricted universe multiverse
+deb [arch=amd64] ${APT_SOURCE_URL} ${UBUNTU_CODENAME}-updates main restricted universe multiverse
+deb [arch=amd64] ${APT_SOURCE_URL} ${UBUNTU_CODENAME}-backports main restricted universe multiverse
+deb [arch=amd64] ${APT_SOURCE_URL} ${UBUNTU_CODENAME}-security main restricted universe multiverse
 EOF
-    APT_SOURCE_ARGS=(
-      -o "Dir::Etc::sourcelist=${APT_SOURCE_FILE}"
-      -o "Dir::Etc::sourceparts=-"
-      -o "APT::Get::List-Cleanup=0"
-    )
+      APT_SOURCE_ARGS=(
+        -o "Dir::Etc::sourcelist=${APT_SOURCE_FILE}"
+        -o "Dir::Etc::sourceparts=-"
+        -o "APT::Get::List-Cleanup=0"
+      )
+    fi
   fi
   "${SUDO_CMD[@]}" apt-get "${APT_SOURCE_ARGS[@]}" update
   "${SUDO_CMD[@]}" apt-get "${APT_SOURCE_ARGS[@]}" install -y \
