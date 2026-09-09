@@ -18,6 +18,7 @@ from scripts.xtrainer.run_real import (
     ControlActionLog,
     InferenceResult,
     TimedAction,
+    _blend_chunk_action,
     _extract_action_chunk,
     _merge_action_queue,
     _policy_payload,
@@ -184,6 +185,19 @@ def test_final_rate_limit_runs_after_blending():
     np.testing.assert_allclose(limited, 0.2)
 
 
+def test_chunk_blend_smooths_only_joints_and_finishes_on_step_six():
+    anchor = np.zeros(14)
+    target = np.full(14, 6.0)
+
+    first = _blend_chunk_action(target, anchor, index=0, blend_steps=6)
+    sixth = _blend_chunk_action(target, anchor, index=5, blend_steps=6)
+
+    joint_indices = np.r_[0:6, 7:13]
+    np.testing.assert_allclose(first[joint_indices], 6.0 * (1.0 / 6.0) ** 2 * (3.0 - 2.0 / 6.0))
+    np.testing.assert_allclose(first[[6, 13]], 6.0)
+    np.testing.assert_allclose(sixth, target)
+
+
 def test_cli_uses_planned_camera_defaults_and_latest_mode():
     args = parse_args(["--host", "127.0.0.1"])
 
@@ -203,6 +217,8 @@ def test_cli_uses_planned_camera_defaults_and_latest_mode():
     assert args.ramp_step == pytest.approx(0.01)
     assert args.ramp_max_steps == 100
     assert args.gripper_update_threshold == 0.0
+    assert args.max_delta_per_step == 0.0
+    assert args.chunk_blend_steps == 6
 
 
 def test_cli_accepts_optional_client_control_log_path(tmp_path):
@@ -280,6 +296,7 @@ def test_control_loop_blends_returned_prefetch_and_keeps_one_request_in_flight()
             prefetch_threshold=0.5,
             request_timeout_s=1.0,
             max_delta_per_step=0.0,
+            chunk_blend_steps=0,
             monotonic_fn=lambda: 0.0,
             sleep_fn=yield_control,
         )

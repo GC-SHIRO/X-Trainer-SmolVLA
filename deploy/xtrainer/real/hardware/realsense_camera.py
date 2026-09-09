@@ -88,7 +88,9 @@ class XTrainerRealSenseCamera:
     def read_rgb(self) -> np.ndarray:
         if self._camera is None:
             raise ConnectionError("RealSense camera is not connected")
-        image = np.asarray(self._camera.read())
+        # LeRobot 在后台持续更新缓存；控制循环只取最新帧，避免三台相机串行
+        # 阻塞 read() 把一次观测采集拉长到多个相机周期。
+        image = np.asarray(self._camera.read_latest(max_age_ms=100))
         if image.ndim != 3 or image.shape[2] != 3:
             raise RuntimeError(f"RealSense RGB frame must be HxWx3, got {image.shape}")
         if image.dtype != np.uint8:

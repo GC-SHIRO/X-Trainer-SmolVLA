@@ -57,6 +57,7 @@ class TimedAction:
     action: np.ndarray
     observation_timestep: int
     timestep: int
+    raw_action: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,7 @@ def _merge_action_queue(
             action=action,
             observation_timestep=result.observation_timestep,
             timestep=timestep,
+            raw_action=np.asarray(new_action, dtype=np.float64).copy(),
         )
     return merged
 
@@ -173,6 +175,22 @@ def _rate_limit_action(
     if previous.shape != (ACTION_DIM,):
         raise ValueError(f"Expected last action shape ({ACTION_DIM},), got {previous.shape}")
     return previous + np.clip(target - previous, -max_delta_per_step, max_delta_per_step)
+
+
+def _blend_chunk_action(
+    action: np.ndarray, anchor: np.ndarray | None, index: int, blend_steps: int
+) -> np.ndarray:
+    """仅平滑新动作来源开头的关节目标，夹爪保持模型原值。"""
+
+    target = np.asarray(action, dtype=np.float64).copy()
+    if anchor is None or blend_steps <= 0 or index >= blend_steps - 1:
+        return target
+    # smoothstep 从上一条实际下发动作过渡，最后一步精确恢复当前轨迹。
+    progress = (index + 1) / blend_steps
+    weight = progress * progress * (3.0 - 2.0 * progress)
+    joints = np.r_[0:6, 7:13]
+    target[joints] = anchor[joints] + weight * (target[joints] - anchor[joints])
+    return target
 
 
 def _should_prefetch(
@@ -273,6 +291,7 @@ async def run_control_loop(
     prefetch_threshold: float,
     request_timeout_s: float,
     max_delta_per_step: float,
+    chunk_blend_steps: int = 6,
     control_log: ControlActionLog | None = None,
     monotonic_fn: Any = time.monotonic,
     sleep_fn: Any = asyncio.sleep,
@@ -292,6 +311,9 @@ async def run_control_loop(
         action_horizon,
     )
     last_sent_action: np.ndarray | None = None
+    active_source_timestep: int | None = None
+    blend_anchor: np.ndarray | None = None
+    blend_index = chunk_blend_steps
     pending_request: asyncio.Task[InferenceResult] | None = None
     period = 1.0 / control_hz
     deadline = monotonic_fn()
@@ -331,7 +353,31 @@ async def run_control_loop(
                 action = timed_action.action
 
             queued_action = np.asarray(action, dtype=np.float64).copy()
-            rate_limited_action = _rate_limit_action(queued_action, last_sent_action, max_delta_per_step)
+            source_changed = bool(
+                timed_action is not None
+                and active_source_timestep is not None
+                and timed_action.observation_timestep != active_source_timestep
+            )
+            if timed_action is not None and timed_action.observation_timestep != active_source_timestep:
+                blend_anchor = last_sent_action.copy() if source_changed and last_sent_action is not None else None
+                blend_index = 0
+                active_source_timestep = timed_action.observation_timestep
+            if timed_action is None:
+                blended_action = queued_action.copy()
+                active_blend_step = None
+            else:
+                blended_action = _blend_chunk_action(
+                    queued_action, blend_anchor, blend_index, chunk_blend_steps
+                )
+                active_blend_step = (
+                    blend_index + 1
+                    if blend_anchor is not None and blend_index < chunk_blend_steps
+                    else None
+                )
+                blend_index += 1
+            rate_limited_action = _rate_limit_action(
+                blended_action, last_sent_action, max_delta_per_step
+            )
             applied_action = environment.apply_action(rate_limited_action, pace=False)
             last_sent_action = np.asarray(applied_action, dtype=np.float64).copy()
             if control_log is not None:
@@ -342,7 +388,15 @@ async def run_control_loop(
                         None if timed_action is None else timed_action.observation_timestep
                     ),
                     used_fallback=used_fallback,
+                    raw_action=(
+                        None
+                        if timed_action is None or timed_action.raw_action is None
+                        else timed_action.raw_action.tolist()
+                    ),
                     queued_action=queued_action.tolist(),
+                    blended_action=blended_action.tolist(),
+                    source_changed=source_changed,
+                    blend_step=active_blend_step,
                     rate_limited_action=rate_limited_action.tolist(),
                     applied_action=last_sent_action.tolist(),
                 )
@@ -413,17 +467,30 @@ async def run_async_control_loop(
     prefetch_threshold: float,
     request_timeout_s: float,
     max_delta_per_step: float,
+    chunk_blend_steps: int = 6,
     control_log: ControlActionLog | None = None,
     monotonic_fn: Any = time.monotonic,
     sleep_fn: Any = asyncio.sleep,
 ) -> None:
     """Run the control loop while continuously replacing the pending observation."""
 
-    policy.submit_observation(
-        _policy_payload(environment.get_observation()),
+    capture_started_at = monotonic_fn()
+    initial_payload = _policy_payload(environment.get_observation())
+    capture_ms = (monotonic_fn() - capture_started_at) * 1000.0
+    initial_observation_id = policy.submit_observation(
+        initial_payload,
         observation_timestep=0,
         must_go=True,
     )
+    if control_log is not None:
+        control_log.write(
+            "async_observation_queued",
+            observation_id=initial_observation_id,
+            observation_timestep=0,
+            must_go=True,
+            remaining_actions=0,
+            observation_capture_ms=capture_ms,
+        )
     while True:
         event = await policy.next_observation_event(timeout_s=request_timeout_s)
         initial_result = _result_from_observation_event(event, action_horizon)
@@ -434,6 +501,9 @@ async def run_async_control_loop(
         raise RuntimeError("Initial async action chunk is already stale")
 
     last_sent_action: np.ndarray | None = None
+    active_source_timestep: int | None = None
+    blend_anchor: np.ndarray | None = None
+    blend_index = chunk_blend_steps
     fallback_started_at: float | None = None
     period = 1.0 / control_hz
     deadline = monotonic_fn()
@@ -444,6 +514,18 @@ async def run_async_control_loop(
             if event is None:
                 break
             result = _result_from_observation_event(event, action_horizon)
+            queue_before_merge = len(action_queue)
+            overlap_action_count = 0
+            if result is not None:
+                incoming_timesteps = {
+                    result.observation_timestep + index
+                    for index in range(len(result.actions))
+                    if result.observation_timestep + index >= step
+                }
+                overlap_action_count = len(incoming_timesteps.intersection(action_queue))
+            merged = None if result is None else _merge_action_queue(
+                action_queue, result, current_timestep=step
+            )
             if control_log is not None:
                 control_log.write(
                     "async_observation_result",
@@ -452,10 +534,12 @@ async def run_async_control_loop(
                     observation_id=event.get("observation_id"),
                     status=event.get("status"),
                     server_timing=event.get("server_timing"),
+                    queue_before_merge=queue_before_merge,
+                    queue_after_merge=(queue_before_merge if merged is None else len(merged)),
+                    overlap_action_count=overlap_action_count,
                 )
             if result is None:
                 continue
-            merged = _merge_action_queue(action_queue, result, current_timestep=step)
             if merged:
                 action_queue = merged
                 fallback_started_at = None
@@ -480,7 +564,31 @@ async def run_async_control_loop(
             action = timed_action.action
 
         queued_action = np.asarray(action, dtype=np.float64).copy()
-        rate_limited_action = _rate_limit_action(queued_action, last_sent_action, max_delta_per_step)
+        source_changed = bool(
+            timed_action is not None
+            and active_source_timestep is not None
+            and timed_action.observation_timestep != active_source_timestep
+        )
+        if timed_action is not None and timed_action.observation_timestep != active_source_timestep:
+            blend_anchor = last_sent_action.copy() if source_changed and last_sent_action is not None else None
+            blend_index = 0
+            active_source_timestep = timed_action.observation_timestep
+        if timed_action is None:
+            blended_action = queued_action.copy()
+            active_blend_step = None
+        else:
+            blended_action = _blend_chunk_action(
+                queued_action, blend_anchor, blend_index, chunk_blend_steps
+            )
+            active_blend_step = (
+                blend_index + 1
+                if blend_anchor is not None and blend_index < chunk_blend_steps
+                else None
+            )
+            blend_index += 1
+        rate_limited_action = _rate_limit_action(
+            blended_action, last_sent_action, max_delta_per_step
+        )
         applied_action = environment.apply_action(rate_limited_action, pace=False)
         last_sent_action = np.asarray(applied_action, dtype=np.float64).copy()
         if control_log is not None:
@@ -491,7 +599,15 @@ async def run_async_control_loop(
                     None if timed_action is None else timed_action.observation_timestep
                 ),
                 used_fallback=used_fallback,
+                raw_action=(
+                    None
+                    if timed_action is None or timed_action.raw_action is None
+                    else timed_action.raw_action.tolist()
+                ),
                 queued_action=queued_action.tolist(),
+                blended_action=blended_action.tolist(),
+                source_changed=source_changed,
+                blend_step=active_blend_step,
                 rate_limited_action=rate_limited_action.tolist(),
                 applied_action=last_sent_action.tolist(),
             )
@@ -503,18 +619,22 @@ async def run_async_control_loop(
         )
         if should_submit:
             observation_timestep = step + 1
+            capture_started_at = monotonic_fn()
+            payload = _policy_payload(environment.get_observation())
+            capture_ms = (monotonic_fn() - capture_started_at) * 1000.0
             observation_id = policy.submit_observation(
-                _policy_payload(environment.get_observation()),
+                payload,
                 observation_timestep=observation_timestep,
                 must_go=used_fallback,
             )
             if control_log is not None:
                 control_log.write(
-                    "async_observation_submitted",
+                    "async_observation_queued",
                     observation_id=observation_id,
                     observation_timestep=observation_timestep,
                     must_go=used_fallback,
                     remaining_actions=len(action_queue),
+                    observation_capture_ms=capture_ms,
                 )
 
         deadline += period
@@ -658,6 +778,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--prefetch-threshold", type=float, default=0.7)
     parser.add_argument(
+        "--chunk-blend-steps",
+        type=int,
+        default=6,
+        help="Smooth joint targets for this many steps after the action source changes; 0 disables it",
+    )
+    parser.add_argument(
         "--async-observation-mode",
         choices=("latest", "legacy"),
         default="latest",
@@ -727,6 +853,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "ramp_max_steps": args.ramp_max_steps,
         "gripper_update_threshold": args.gripper_update_threshold,
         "max_delta_per_step": args.max_delta_per_step,
+        "chunk_blend_steps": args.chunk_blend_steps,
     }
     invalid = [name for name, value in non_negative_values.items() if value < 0]
     if invalid:
@@ -775,6 +902,7 @@ async def run(
             prefetch_threshold=args.prefetch_threshold,
             request_timeout_s=args.request_timeout,
             max_delta_per_step=args.max_delta_per_step,
+            chunk_blend_steps=args.chunk_blend_steps,
             control_log=control_log,
         )
     finally:

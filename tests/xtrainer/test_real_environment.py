@@ -9,7 +9,10 @@ from deploy.xtrainer.real.environment import (
     XTrainerRealEnvironment,
     XTrainerSafetyConfig,
 )
-from deploy.xtrainer.real.hardware.realsense_camera import XTrainerRealSenseCameraConfig
+from deploy.xtrainer.real.hardware.realsense_camera import (
+    XTrainerRealSenseCamera,
+    XTrainerRealSenseCameraConfig,
+)
 
 
 class MockArm:
@@ -128,6 +131,48 @@ def test_observation_rejects_missing_or_bad_camera_mapping():
     with pytest.raises(ValueError, match="HxWx3"):
         env.reset()
 
+
+def test_realsense_control_read_uses_latest_cached_frame():
+    class CameraConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class Camera:
+        def __init__(self, _config):
+            self.warmup_reads = 0
+            self.latest_max_ages = []
+
+        def connect(self):
+            return None
+
+        def read(self):
+            self.warmup_reads += 1
+            return np.zeros((4, 5, 3), dtype=np.uint8)
+
+        def read_latest(self, *, max_age_ms):
+            self.latest_max_ages.append(max_age_ms)
+            return np.ones((4, 5, 3), dtype=np.uint8)
+
+        def disconnect(self):
+            return None
+
+    camera = XTrainerRealSenseCamera(
+        XTrainerRealSenseCameraConfig(
+            name="top",
+            serial="top-serial",
+            observation_key="observation.images.top",
+            warmup_frames=2,
+        ),
+        camera_factory=Camera,
+        camera_config_factory=CameraConfig,
+    )
+
+    camera.connect()
+    image = camera.read_rgb()
+
+    assert camera._camera.warmup_reads == 2
+    assert camera._camera.latest_max_ages == [100]
+    np.testing.assert_array_equal(image, np.ones((4, 5, 3), dtype=np.uint8))
 
 def test_package_exports_public_environment_interface():
     assert PublicXTrainerRealEnvironment is XTrainerRealEnvironment

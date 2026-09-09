@@ -393,6 +393,7 @@ python scripts/xtrainer/run_real.py \
 | `--max-joint-delta`    | 默认关闭   | 可选的单步关节变化限幅；默认无穷大，不改写策略动作。                                           |
 | `--max-gripper-delta`  | 默认关闭   | 可选的单步夹爪变化限幅；默认无穷大。                                                           |
 | `--max-delta-per-step` | 默认关闭   | 可选的最终逐维限幅；默认`0`，不改写策略动作。                                                |
+| `--chunk-blend-steps`  | 默认`6`   | 每次动作来源切换后，用 6 个现有控制步从上一条实际动作平滑过渡；只处理 12 个关节，`0` 可关闭。 |
 | `--ramp-step`          | 默认`0.01` | 自动 reset 时用于计算插值步数的期望变化量，单位为弧度。                                        |
 | `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数；距离较大时仍会在最后一步完整到达目标。                              |
 | `--async-observation-mode` | 默认`latest` | 推理期间持续提交观测，服务端只保留尚未推理的最新一条；`legacy` 可回退到原单请求模式。        |
@@ -407,6 +408,11 @@ python scripts/xtrainer/run_real.py \
 推理的观测，更新的观测会替换它。模型推理本身保持串行。相似过滤默认关闭，需要时显式传入例如
 `--observation-similarity-epsilon 0.01`。该判断不比较图像，机器人关节不变但物体发生移动的任务应
 保持关闭或先做针对性验证。需要回退时使用 `--async-observation-mode legacy`。
+
+真机相机读取默认使用 LeRobot 的最新缓存帧，避免三台相机依次阻塞控制循环。使用 `--log-control` 时，
+`async_observation_queued` 会记录 `observation_capture_ms`；`async_observation_result` 会记录合并前后
+队列长度和重叠动作数；每条 `control_step` 同时保留模型 `raw_action`、队列 `queued_action`、边界
+`blended_action` 以及 `source_changed`/`blend_step`，便于区分采集停顿、动作块合并和最终下发值。
 
 策略服务端也兼容参考仓库的命名，例如：
 
