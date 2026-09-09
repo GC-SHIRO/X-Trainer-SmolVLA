@@ -26,7 +26,11 @@ class XTrainerWebSocketPolicyClient:
         self._send_lock = asyncio.Lock()
         self._rpc_waiters: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._ack_waiters: dict[int, asyncio.Future[dict[str, Any]]] = {}
-        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=32)
+        # Observation results must never stop the sole WebSocket receiver.  A
+        # bounded queue made QueueFull terminate this task and, with it, ACK
+        # handling.  The sender already serializes acknowledged observations,
+        # and the control loop throttles production, so this queue stays small.
+        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pending_observation: dict[str, Any] | None = None
         self._pending_event = asyncio.Event()
         self._closed = False

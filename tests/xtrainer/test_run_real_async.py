@@ -74,6 +74,7 @@ def test_async_control_loop_executes_initial_timestep_aligned_chunk():
             control_hz=1000,
             max_steps=3,
             prefetch_threshold=0,
+            observation_hz=10,
             request_timeout_s=1,
             max_delta_per_step=0,
         )

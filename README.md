@@ -1,70 +1,201 @@
-# X-Trainer SmolVLA：训练、Mock 联调与真机部署
+# X-Trainer 部署 SmolVLA 手册
 
 版本：V1.0  
-日期：2026-09-04  
+日期：2026-09-06
 适用代码：`GC-SHIRO/X-Trainer-SmolVLA` `main`
 
-> 本 README 按 X-Trainer Pi0.5 手册的端到端标准整理。所有路径、设备序列号和任务文本应按实际环境替换；未在本机实测的结果不应视为验收结论。
+---
 
-本文说明如何使用 X-trainer 双臂机器人采集的数据微调标准 SmolVLA 策略，并完成 Mock Policy 联调和
-真机部署。原始采集数据可先转换为本项目训练所需的 LeRobot Dataset v2.1；训练本身复用现有的
-`lerobot-train` 训练循环和只读 v2.1 适配器，不会改写转换完成的数据集。
+## 1. 文档目标
 
-完整流程为：准备 v2.1 数据集 → 全量或 LoRA 训练 → Mock Policy 联调机器人端 → 启动真实策略服务 →
-小步执行真机任务。本文不包含代码单元测试或模块测试。
+本文用于在 Dobot X-Trainer 双臂平台上完成 SmolVLA 的数据采集、数据转换、全量微调和真机部署。
 
-## 环境要求
+流程：硬件检查 -> 遥操作采集 -> LeRobot Dataset v2.1 -> 数据校验 -> SmolVLA 全量微调 -> 策略服务 -> 真机执行。
 
-默认运行环境为 Ubuntu 24.04 LTS x86_64，使用 Conda 管理 Python 3.12。仓库提供一键安装脚本，在仓库
-根目录执行：
+## 2. 总体架构
+
+### 2.1 端到端流程
+
+```text
+X-Trainer 硬件
+    -> follower / leader / gripper / RealSense 检查
+    -> raw episode 采集
+    -> LeRobot Dataset v2.1
+    -> SmolVLA 全量微调
+    -> checkpoint
+    -> policy server
+    -> X-Trainer real client
+```
+
+### 2.2 项目分工
+
+| 模块 | 位置 | 作用 |
+|---|---|---|
+| 采集和机器人控制 | `dobot_xtrainer` | 连接 Dobot、leader、夹爪和相机，保存 raw episode。 |
+| 数据转换 | `scripts/xtrainer/convert_raw_to_lerobot_2_1.py` | 写入 LeRobot Dataset v2.1。 |
+| 数据校验 | `scripts/xtrainer/validate_dataset_v21.py` | 检查字段、维度、统计量、视频和 episode。 |
+| 训练 | `scripts/xtrainer/train_smolvla.sh` | 使用 `configs/xtrainer/train_smolvla.yaml` 训练。 |
+| 策略服务 | `scripts/xtrainer/serve_policy.py` | 加载 checkpoint 并通过 WebSocket 提供动作。 |
+| 真机客户端 | `scripts/xtrainer/run_real.py` | 读取状态和图像并下发动作。 |
+
+### 2.3 关键数据契约
+
+| 字段 | 形状 | 含义 |
+|---|---:|---|
+| `observation.state` | `(14,)` | 左臂 6 关节、左夹爪、右臂 6 关节、右夹爪。 |
+| `action` | `(14,)` | 与状态相同顺序的目标动作。 |
+| `observation.images.top` | image/video | 顶部相机。 |
+| `observation.images.left_wrist` | image/video | 左腕相机。 |
+| `observation.images.right_wrist` | image/video | 右腕相机。 |
+| `task` | string | 任务描述。 |
+
+动作索引固定为 `0-5` 左臂、`6` 左夹爪、`7-12` 右臂、`13` 右夹爪；关节单位为弧度，夹爪范围为 `[0,1]`。
+
+## 3. 硬件和软件前置条件
+
+### 3.1 硬件组成
+
+| 硬件 | 数量 | 用途 |
+|---|---:|---|
+| Dobot follower 机械臂 | 2 | 执行动作。 |
+| leader 主手 | 2 | 输入遥操作动作。 |
+| Feetech / X-Trainer 夹爪 | 2 | 控制左右夹爪。 |
+| Intel RealSense | 3 | 顶部、左腕、右腕图像。 |
+| GPU 训练机 | 1 | 训练和策略服务。 |
+| 机器人控制机 | 1 | 连接硬件、采集和执行。 |
+
+### 3.2 网络和设备约定
+
+```text
+左臂 follower: 192.168.5.1
+右臂 follower: 192.168.5.2
+```
+
+```bash
+ping 192.168.5.1
+ping 192.168.5.2
+ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true
+```
+
+实际串口和相机序列号以现场配置为准，不能只按 USB 枚举顺序判断左右设备。
+
+### 3.3 系统建议
+
+安装脚本按 Ubuntu 24.04 x86_64、Python 3.12、PyTorch 2.8.0 CUDA 12.8 准备。GPU 模式要求 NVIDIA 驱动不低于 `570.26`。
+
+## 4. 环境部署
+
+在仓库根目录执行：
 
 ```bash
 bash tools/install_xtrainer_env.sh
 conda activate xtrainer-smolvla
 ```
 
-脚本默认安装 PyTorch 2.8.0 CUDA 12.8 wheel，以及训练、LoRA、WebSocket 服务、Feetech 夹爪、
-Intel RealSense 和原始数据转换依赖（Datasets、PyArrow、OpenCV、Pillow、PyAV、FFmpeg）。GPU 模式要求
-NVIDIA 驱动不低于 `570.26`，但不要求预装系统 CUDA Toolkit。
-脚本不会安装显卡驱动、下载模型或数据集，也不会修改串口和 USB 权限。
+使用官方软件源：
 
-安装默认使用国内镜像完成 Ubuntu、Conda、PyPI 和 PyTorch 依赖下载，并且不会永久修改系统源配置。如需改用
-官方源，执行 `bash tools/install_xtrainer_env.sh --source official`。
+```bash
+bash tools/install_xtrainer_env.sh --source official
+```
 
-只需要运行 Mock Policy 或无 GPU 的机器人端时，可以安装 CPU 环境：
+只做数据转换时可使用 CPU 环境：
 
 ```bash
 bash tools/install_xtrainer_env.sh --cpu-only
 conda activate xtrainer-smolvla
 ```
 
-全部选项和环境边界见 [`tools/README.md`](tools/README.md)。训练和真实 SmolVLA 策略推理建议使用默认
-CUDA 环境；CPU 模式不适合实际训练，也不建议用于有实时性要求的模型推理。
+脚本不安装显卡驱动、不下载模型，也不修改串口权限。
 
-## 下载基础模型权重
+## 5. X-Trainer 硬件配置
 
-安装环境后，可以选择 Hugging Face 或 ModelScope。下载脚本会同时下载策略 `lerobot/smolvla_base` 和训练时必需的
-视觉语言骨干 `SmolVLM2-500M-Video-Instruct`：
+### 5.1 配置内容
 
-```bash
-# Hugging Face
-bash tools/download_smolvla_weights_hf.sh
+配置左右 Dobot IP、leader 串口、夹爪串口、夹爪 ID 和三台 RealSense 序列号。不要把密码、私有串口和设备序列号提交到公共仓库。
 
-# 或者使用 ModelScope
-bash tools/download_smolvla_weights_modelscope.sh
+动作排列必须保持：
+
+```text
+left_j1 ... left_j6, left_gripper,
+right_j1 ... right_j6, right_gripper
 ```
 
-默认目录为 `models/smolvla_base` 和 `models/smolvlm2_500m_video_instruct`。离线部署时，将前者传给
-`serve_policy.py --checkpoint models/smolvla_base`。自定义模型 ID、保存目录、revision 和 Conda 环境名的方法见
-[`tools/README.md`](tools/README.md)。LoRA adapter 只包含增量参数，因此部署 LoRA 前也必须准备基础模型。
+### 5.2 配置文件位置
 
-全量训练和 LoRA 启动脚本会在新训练时自动检查两个目录中的 `config.json`。文件存在时，脚本会同时传入本地策略和
-本地 VLM 骨干路径，并让 tokenizer 使用同一份本地 VLM，不会访问 Hugging Face。断点续训不会使用这个自动覆盖，
-始终以 checkpoint 保存的策略配置为准。
+采集侧沿用 `dobot_xtrainer/scripts/dobot_config/dobot_settings.ini`。其中包含相机序列号、leader 串口、夹爪串口、关节 ID、offset、方向和初始姿态。密码和现场设备信息不要提交到公共仓库。
 
-## 从原始采集数据转换
+### 5.3 自动扫描串口
 
-原始采集目录应按 episode 组织，并在每个 episode 中包含三路图像与同名帧号的观测文件：
+```bash
+cd /path/to/workspace/dobot_xtrainer
+python scripts/1_find_port.py
+```
+
+脚本扫描 `/dev/ttyACM*` 和 `/dev/ttyUSB*`，识别左右 leader 与夹爪并写回配置。设备重插后应重新扫描。
+
+### 5.4 标定 leader offset
+
+```bash
+python scripts/2_get_offset.py
+```
+
+标定前将 leader 放到约定的初始姿态，确认左右串口、`joint_ids`、`append_id` 和波特率正确。
+
+### 5.5 检查相机和硬件
+
+```bash
+ping 192.168.5.1
+ping 192.168.5.2
+ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true
+python scripts/5_camera_read.py
+python scripts/xtrainer/check_real_hardware.py --help
+python scripts/xtrainer/check_real_hardware.py --execute
+```
+
+执行检查前清空工作区并确认急停可触达。确认相机序列号、左右映射和关节方向后再采集。
+
+## 6. 遥操作与数据采集
+
+### 6.1 启动 follower server
+
+在终端 1 执行：
+
+```bash
+cd /path/to/workspace/dobot_xtrainer
+conda activate xtrainer
+python experiments/launch_nodes.py --hostname 127.0.0.1 --robot-port 6001
+```
+
+启动前确认左右 Dobot IP 可达、控制盒处于 TCP/IP 控制状态，且没有安全保护未复位。
+
+### 6.2 启动遥操作和采集程序
+
+在终端 2 执行：
+
+```bash
+cd /path/to/workspace/dobot_xtrainer
+conda activate xtrainer
+python experiments/run_control.py \
+  --hostname 127.0.0.1 \
+  --robot-port 6001 \
+  --show-img True
+```
+
+### 6.3 按钮语义
+
+| 操作 | 作用 |
+|---|---|
+| Button A 短按 | leader lock / unlock。 |
+| Button A 长按超过 1 秒 | 对应侧 follower servo start / stop。 |
+| Button B 按下 | 开始 / 停止 recording。 |
+
+推荐顺序：启动 follower server，启动 `run_control.py`，短按 A 解锁 leader，长按 A 启动 servo，确认跟随方向后按 B 录制；停止录制后再停 servo，并锁定 leader。
+
+### 6.4 采集前准备
+
+确认 follower 上电、Dobot 网络可达、leader 和夹爪串口可用、三路相机画面正常。先用低速动作确认左右臂和夹爪方向。
+
+### 6.5 采集输出结构
 
 ```text
 collect_data/
@@ -75,394 +206,165 @@ collect_data/
     └── observation/<frame_id>.pkl
 ```
 
-每个 `.pkl` 必须包含 14 维 `joint_positions`（状态）和 14 维 `control`（动作）。在已激活的一键环境中执行：
+每个 pkl 至少包含 `joint_positions` 和 `control`，两者均为 14 维。三路图像和 pkl 必须按同一帧号对应。
+
+### 6.6 采集要求
+
+1. 每个任务先采集少量短 episode，确认转换和训练链路可用。
+2. 每条 episode 从稳定初始场景开始，到任务完成后结束。
+3. 相机覆盖目标物体、末端执行器和操作区域。
+4. leader 动作保持平滑，避免快速大幅移动。
+5. 训练和部署使用固定任务描述，例如 `将桌面上的方块放入收纳盒`。
+
+### 6.7 采集后检查
+
+```bash
+find /data/xtrainer/collect_data -maxdepth 1 -mindepth 1 -type d | wc -l
+find /data/xtrainer/collect_data/<episode_id>/observation -name "*.pkl" | wc -l
+find /data/xtrainer/collect_data/<episode_id>/topImg -name "*.jpg" | wc -l
+```
+
+帧数不一致时，先处理 raw 数据，再转换。
+
+## 7. Raw 数据转换为 LeRobot 格式
+
+### 7.1 转换命令
 
 ```bash
 python scripts/xtrainer/convert_raw_to_lerobot_2_1.py \
   --raw-root /data/xtrainer/collect_data \
-  --output-root /data/xtrainer/my_xtrainer_dataset \
-  --task "将试管放入试管架" \
+  --output-root /data/xtrainer/dataset_v21 \
+  --task "将桌面上的方块放入收纳盒" \
   --fps 30 \
   --use-videos \
   --overwrite-output
 ```
 
-转换器仅保留 state、action 和三路图像都存在且可读取的帧，默认跳过坏帧；`--fail-on-bad-frames` 可改为遇到
-坏帧立即停止。`--overwrite-output` 会递归删除已有的非空输出目录，必须只指向可安全替换的目标目录，不能指向
-原始采集目录。默认 MP4 视频输出与训练配置兼容；`--no-videos` 只适合转换调试，不能通过本项目的标准 v2.1
-视频校验或 SmolVLA 训练。
+`--output-root` 不能指向 raw 目录；需要在坏帧处停止时增加 `--fail-on-bad-frames`。
 
-转换后先完整校验，再启动训练：
+### 7.2 字段映射
+
+| raw 字段 | LeRobot 字段 |
+|---|---|
+| `joint_positions` | `observation.state` |
+| `control` | `action` |
+| `topImg` | `observation.images.top` |
+| `leftImg` | `observation.images.left_wrist` |
+| `rightImg` | `observation.images.right_wrist` |
+| `--task` | episode task |
+
+输出至少包含 `meta/info.json`、`meta/stats.json`、`meta/tasks.jsonl`、`meta/episodes.jsonl`、parquet 数据和三路视频。
+
+## 8. 模型数据配置
+
+SmolVLA 读取以下字段，不要改成其他相机名称：
+
+```text
+observation.state
+observation.images.top
+observation.images.left_wrist
+observation.images.right_wrist
+action
+task
+```
+
+训练配置为 `configs/xtrainer/train_smolvla.yaml`。状态、动作维度必须为 14，图像视角数量为 3；训练和部署使用相同任务文本及动作顺序。
+
+## 9. 基础模型与数据校验
+
+下载基础策略和视觉语言骨干：
+
+```bash
+bash tools/download_smolvla_weights_hf.sh
+```
+
+或使用 ModelScope：
+
+```bash
+bash tools/download_smolvla_weights_modelscope.sh
+```
+
+默认目录为 `models/smolvla_base` 和 `models/smolvlm2_500m_video_instruct`。训练前执行：
 
 ```bash
 python scripts/xtrainer/validate_dataset_v21.py \
-  --root /data/xtrainer/my_xtrainer_dataset \
+  --root /data/xtrainer/dataset_v21 \
   --all-episodes
 ```
 
-## 数据集目录与契约
+相机方向不一致时，使用 `tools/transform_xtrainer_dataset_images.py` 生成副本，不覆盖唯一数据源。
 
-传给启动脚本的数据集根目录必须符合以下 LeRobot v2.1 结构：
+## 10. SmolVLA 全量微调
 
-```text
-my_xtrainer_dataset/
-├── meta/
-│   ├── info.json
-│   ├── stats.json
-│   ├── tasks.jsonl
-│   └── episodes.jsonl
-├── data/chunk-000/episode_000000.parquet
-└── videos/chunk-000/
-    ├── observation.images.top/episode_000000.mp4
-    ├── observation.images.left_wrist/episode_000000.mp4
-    └── observation.images.right_wrist/episode_000000.mp4
-```
-
-`meta/info.json` 必须声明 `codebase_version: v2.1`、正数 `fps`，并包含以下字段：
-
-- `observation.state`：14 个 `float32` 值。
-- `action`：14 个 `float32` 值。
-- `observation.images.top`、`observation.images.left_wrist`、
-  `observation.images.right_wrist`：视频字段。
-- `timestamp`、`episode_index`、`frame_index`、`task_index`。
-
-每个 episode 的 Parquet 文件包含上述非图像字段。`task_index` 会通过 `meta/tasks.jsonl` 解析为传给
-SmolVLA 的任务文本。14 维向量顺序固定为：左臂关节 1–6、左夹爪、右臂关节 1–6、右夹爪；夹爪值必须归一化到
-`[0, 1]`。
-
-基础 SmolVLA checkpoint 使用 `observation.images.camera1`、`camera2`、`camera3` 三个视觉键。X-trainer 的
-全量和 LoRA 配置已内置重命名：`top → camera1`、`left_wrist → camera2`、`right_wrist → camera3`。原始数据集
-文件和字段不会被修改。
-
-## 单 GPU 全量微调
-
-全量训练启动脚本使用 `configs/xtrainer/train_smolvla.yaml`，其中指定
-`dataset.format_version: v2.1` 和 `lerobot/smolvla_base`。在启动 GPU 训练前，脚本会默认抽样校验
-数据集及视频。
-
-Linux/macOS Shell：
+### 10.1 Smoke training
 
 ```bash
 bash scripts/xtrainer/train_smolvla.sh \
-  --dataset-root /data/xtrainer/my_xtrainer_dataset \
-  --device cuda \
-  --batch-size 8 \
-  --steps 100000 \
-  --output-dir outputs/train/xtrainer_smolvla_full
-```
-
-`--device` 会覆盖策略的运行设备，可设为 `cuda`、`cuda:0` 或 `cpu`。即使基础模型路径由 YAML 的
-`policy.path` 指定，也可以正常传入该参数；策略配置会在加载基础模型时再应用此覆盖值。
-X-trainer 的全量与 LoRA 配置默认 `push_to_hub: false`，训练 checkpoint 仅写入本地 `outputs/`，无需提供
-Hugging Face `repo_id`。
-
-使用 `--help` 查看启动脚本帮助。脚本会拒绝缺失或不存在的数据集目录；只有在数据集已校验且明确需要
-跳过只读预检时，才使用 `--skip-validation`。
-
-若要执行最小 smoke run，请使用有效的小型数据集并降低 batch size 与 steps：
-
-```bash
-bash scripts/xtrainer/train_smolvla.sh \
-  --dataset-root /data/xtrainer/smoke \
-  --device cuda \
-  --batch-size 1 \
-  --steps 1 \
+  --dataset-root /data/xtrainer/dataset_v21 \
+  --device cuda --batch-size  1 --steps 1 \
   --output-dir outputs/train/xtrainer_smolvla_smoke
 ```
 
-该命令仍使用正式训练循环：会完成一次前向传播、反向传播和参数更新，并在训练结束时写入 checkpoint。
-
-## 断点续训
-
-传入 checkpoint 的 `pretrained_model` 目录或其中的 `train_config.json`。断点续训时，checkpoint 中保存的
-训练配置是权威配置；启动脚本仍会应用显式传入的 dataset root、输出目录、device、batch size 与 steps 覆盖值。
+### 10.2 正式训练
 
 ```bash
 bash scripts/xtrainer/train_smolvla.sh \
-  --dataset-root /data/xtrainer/my_xtrainer_dataset \
+  --dataset-root /data/xtrainer/dataset_v21 \
+  --device cuda --batch-size 4 --steps 30000 \
+  --output-dir outputs/train/xtrainer_smolvla_full
+```
+
+显存不足时先减小 batch size。训练输出的 `pretrained_model` 目录用于策略服务。
+
+## 11. 断点续训
+
+```bash
+bash scripts/xtrainer/train_smolvla.sh \
+  --dataset-root /data/xtrainer/dataset_v21 \
   --resume-checkpoint outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model \
-  --device cuda
+  --device cuda --batch-size 4 --steps 30000 \
+  --output-dir outputs/train/xtrainer_smolvla_full
 ```
 
-第一版仅支持单个本地 v2.1 数据集。streaming、HF Storage Bucket 和多数据集训练会在启动前被拒绝。如需分布式
-训练，请直接使用仓库已文档化的 `torchrun` 工作流，并保持
-`--dataset.format_version=v2.1` 配置不变。
+断点目录中的策略配置和 processor 应与数据字段、相机顺序和任务文本一致。
 
-## LoRA 微调
-
-LoRA 工作流使用 `configs/xtrainer/train_smolvla_lora.yaml` 和
-`scripts/xtrainer/train_smolvla_lora.sh`。一键环境脚本已经包含 PEFT 依赖，无需再次安装。
-
-它从 `lerobot/smolvla_base` 开始训练，并固定使用：
-
-```yaml
-peft:
-  method_type: LORA
-  r: 64
-  lora_alpha: 64
-```
-
-配置不指定 `target_modules`，因此复用 SmolVLA 内置的默认 LoRA 目标模块；EMA 被禁用，且分片并行会被
-训练配置拒绝。LoRA 输出目录独立于全量微调输出目录。
-
-```bash
-bash scripts/xtrainer/train_smolvla_lora.sh \
-  --dataset-root /data/xtrainer/my_xtrainer_dataset \
-  --device cuda \
-  --batch-size 8 \
-  --steps 100000 \
-  --output-dir outputs/train/xtrainer_smolvla_lora
-```
-
-最小 smoke run 可将 `--batch-size` 和 `--steps` 都设为 `1`。成功 checkpoint 的
-`pretrained_model` 目录应包含 `adapter_model.safetensors`、`adapter_config.json`、策略配置和 processor
-文件。该 adapter 不是独立模型：部署或重新加载时必须配合其声明的 `lerobot/smolvla_base` base model。
-
-## 训练输出如何用于部署
-
-全量训练和 LoRA 训练的输出用途不同：
-
-| 训练方式  | 部署时使用的目录                                  | 启动参数           |
-| --------- | ------------------------------------------------- | ------------------ |
-| 全量微调  | checkpoint 下的`pretrained_model`               | `--checkpoint`   |
-| LoRA 微调 | 含`adapter_config.json` 的 `pretrained_model` | `--lora-adapter` |
-
-全量训练示例目录：
-
-```text
-outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model
-```
-
-LoRA adapter 示例目录：
-
-```text
-outputs/train/xtrainer_smolvla_lora/checkpoints/last/pretrained_model
-```
-
-LoRA 加载时，服务会先读取 adapter 配置中记录的基础模型，再把 adapter 叠加到基础模型上。因此 adapter
-目录不能被当作完整模型单独使用。
-
-## 部署结构
-
-推荐把策略服务和机器人控制程序分开运行：
-
-```text
-GPU 策略机                                         机器人控制机
-serve_policy.py  <------ WebSocket / TCP 8000 ----> run_real.py
-    SmolVLA                                           Dobot 双臂
-                                                      Feetech 双夹爪
-                                                      3 台 RealSense
-```
-
-如果只有一台 Ubuntu 机器，也可以在两个终端中运行服务端和机器人端，客户端使用 `--host 127.0.0.1`。
-服务协议没有认证和 TLS，只能放在可信局域网中；不要把 8000 端口直接暴露到公网。
-
-策略与机器人之间的数据契约固定为：
-
-- 输入：`top`、`left_wrist`、`right_wrist` 三路 RGB 图像，14 维机器人状态和任务文本。
-- 输出：14 维绝对目标，顺序为左臂 6 关节、左夹爪、右臂 6 关节、右夹爪。
-- 服务一次可以返回最多 50 步动作；机器人端按 `--action-horizon` 决定实际执行多少步后重新请求。
-- 真实策略服务会在 metadata 中提供 `reset_pose`；机器人端连接后会先平滑移动到该姿态，再开始策略循环。
-
-## 先运行 Mock Policy 联调
-
-Mock Policy 不加载模型，也不需要 checkpoint。它读取机器人端上传的当前 14 维状态，并返回“保持当前姿态”的
-动作块。它适合先确认网络、协议、相机、机械臂和夹爪都能被机器人端正确打开。
-
-注意：Mock 不是纯软件模拟。`run_real.py` 仍然会连接真实 Dobot、Feetech 和 RealSense；添加 `--execute`
-后也会向机器人发送保持姿态命令。首次运行前仍须清空工作区、准备急停并由人员看护。
-
-在服务端启动 Mock Policy：
-
-```bash
-conda activate xtrainer-smolvla
-python scripts/xtrainer/serve_mock_policy.py \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --chunk-size 50
-```
-
-在机器人控制机使用较短时长运行：
-
-```bash
-conda activate xtrainer-smolvla
-python scripts/xtrainer/run_real.py \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --task "保持当前位置，检查部署链路" \
-  --action-horizon 5 \
-  --max-steps 20 \
-  --execute
-```
-
-将 `192.168.1.100` 替换为 Mock 服务所在机器的局域网 IP。若不传 `--execute`，程序会主动拒绝进入运动流程；
-这是防止误操作的安全开关，不是预览模式。
-
-Mock metadata 不包含 `reset_pose`，因此 Mock 联调不会主动把机械臂移动到真实策略的复位姿态。它的正确表现是：
-服务持续返回与当前状态相同的目标，机器人没有明显位移，终端没有维度、超时或设备连接错误。
-
-## 真机硬件准备
-
-默认硬件参数与 X-trainer 参考部署保持一致，可以通过 `run_real.py` 参数覆盖：
-
-| 设备           | 默认配置                    |
-| -------------- | --------------------------- |
-| 左 Dobot       | `192.168.5.1`             |
-| 右 Dobot       | `192.168.5.2`             |
-| 左夹爪         | `/dev/ttyUSB1`，ID `21` |
-| 右夹爪         | `/dev/ttyUSB0`，ID `22` |
-| 顶部 RealSense | 序列号`409122273405`      |
-| 左腕 RealSense | 序列号`412622272997`      |
-| 右腕 RealSense | 序列号`412622271417`      |
-
-部署前逐项确认：
-
-1. 机器人控制机能访问两台 Dobot 的 IP，且 IP 没有接反。
-2. 当前用户能访问两个 `/dev/ttyUSB*`；需要时将用户加入 `dialout` 组，重新登录后再运行。
-3. 三台 RealSense 的物理安装位置和序列号一致，尤其不能交换左右腕相机。
-4. 策略机 TCP 8000 端口可由机器人控制机访问，但只允许可信局域网访问。
-5. 双臂周围没有人员、线缆或障碍物，急停可立即触达。
-6. 已先完成 Mock 联调，再切换为真实 checkpoint。
-
-串口设备名可能随 USB 插拔顺序变化。如果现场名称不同，显式传入
-`--left-gripper-port` 和 `--right-gripper-port`，不要仅凭 `/dev/ttyUSB0`、`/dev/ttyUSB1` 的编号猜测左右。
-
-## 启动真实策略服务
-
-### 全量微调 checkpoint
-
-在有 NVIDIA GPU 的策略机上运行：
+## 12. 启动策略服务
 
 ```bash
 conda activate xtrainer-smolvla
 python scripts/xtrainer/serve_policy.py \
   --checkpoint outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model \
-  --device cuda \
-  --host 0.0.0.0 \
-  --port 8000
+  --device cuda --host 0.0.0.0 --port 8000
 ```
 
-### LoRA adapter
+机器人控制机通过策略机局域网 IP 访问 TCP `8000` 端口，服务终端保持运行。
 
-部署 LoRA 时，同时给出基础模型和 adapter。`--checkpoint` 可以是 Hugging Face 模型 ID，也可以是已经下载的
-本地基础模型目录：
+## 13. 启动真机任务
 
-```bash
-conda activate xtrainer-smolvla
-python scripts/xtrainer/serve_policy.py \
-  --checkpoint lerobot/smolvla_base \
-  --lora-adapter outputs/train/xtrainer_smolvla_lora/checkpoints/last/pretrained_model \
-  --device cuda \
-  --host 0.0.0.0 \
-  --port 8000
-```
-
-服务启动时会加载策略和 processor，并默认执行一次 warmup。只有在明确不需要 warmup 时才使用
-`--no-warmup`。服务正常运行后保持该终端不要退出。
-
-## 启动真机任务
-
-先确认服务端已经启动，再在机器人控制机执行。首次使用真实策略时，建议保持短动作块和低步数：
+首次运行使用较小步数和动作增量：
 
 ```bash
 conda activate xtrainer-smolvla
 python scripts/xtrainer/run_real.py \
-  --host 192.168.1.100 \
-  --port 8000 \
+  --host <策略机IP> --port 8000 \
   --task "将桌面上的方块放入收纳盒" \
-  --left-robot-ip 192.168.5.1 \
-  --right-robot-ip 192.168.5.2 \
-  --left-gripper-port /dev/ttyUSB1 \
-  --right-gripper-port /dev/ttyUSB0 \
-  --camera-top-serial 409122273405 \
-  --camera-left-wrist-serial 412622272997 \
-  --camera-right-wrist-serial 412622271417 \
-  --action-horizon 5 \
-  --max-steps 100 \
-  --execute
+  --left-robot-ip 192.168.5.1 --right-robot-ip 192.168.5.2 \
+  --action-horizon 5 --control-hz 10 --max-steps 100 \
+  --max-joint-delta 0.03 --max-gripper-delta 0.02 --execute
 ```
 
-`--host` 是策略服务所在机器的局域网 IP；只有服务和机器人控制程序在同一台机器上运行时才使用
-`127.0.0.1`。以下参数决定首次真机运行的速度和动作范围：
+`--host` 填策略机局域网 IP；仅在同机运行时使用 `127.0.0.1`。确认 reset pose、左右臂映射和夹爪方向后再增加运行步数，全程保持急停可触达。
 
-| 参数                     | 示例值       | 作用                                                                                           |
-| ------------------------ | ------------ | ---------------------------------------------------------------------------------------------- |
-| `--action-horizon`     | `5`        | 每次从服务端动作块中实际消费的步数；值小会更频繁地重新观测与请求策略。                         |
-| `--control-hz`         | 默认`30`  | 客户端动作下发频率，与 X-trainer 采集频率一致，约每 33.3 ms 一步。                             |
-| `--max-steps`          | `100`      | 本次任务最多执行的控制步数；以 30 Hz 运行约为 3.3 秒。                                         |
-| `--max-joint-delta`    | 默认关闭   | 可选的单步关节变化限幅；默认无穷大，不改写策略动作。                                           |
-| `--max-gripper-delta`  | 默认关闭   | 可选的单步夹爪变化限幅；默认无穷大。                                                           |
-| `--max-delta-per-step` | 默认关闭   | 可选的最终逐维限幅；默认`0`，不改写策略动作。                                                |
-| `--chunk-blend-steps`  | 默认`6`   | 每次动作来源切换后，用 6 个现有控制步从上一条实际动作平滑过渡；只处理 12 个关节，`0` 可关闭。 |
-| `--ramp-step`          | 默认`0.01` | 自动 reset 时用于计算插值步数的期望变化量，单位为弧度。                                        |
-| `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数；距离较大时仍会在最后一步完整到达目标。                              |
-| `--async-observation-mode` | 默认`latest` | 推理期间持续提交观测，服务端只保留尚未推理的最新一条；`legacy` 可回退到原单请求模式。        |
-| `--observation-similarity-epsilon` | 默认关闭 | 12 个机械臂关节差的 L2 阈值（弧度）；夹爪或任务变化不会被过滤。仅用于 `latest`。              |
-| `--execute`            | 必填         | 显式允许机器人使能和下发动作；省略时程序会在连接硬件前拒绝执行。                               |
+## 14. 关键文件索引
 
-参考仓库的硬件参数别名（`--left-arm-ip`、`--right-arm-ip`、`--top-camera-serial`、
-`--left-wrist-camera-serial`、`--right-wrist-camera-serial`）也可继续使用。预取统一使用
-`--prefetch-threshold`：当剩余动作数与 `action_horizon` 的比例小于或等于该值时请求下一块。
-
-客户端默认启用路线 A 的 `latest` 模式：模型正在计算时，新观测仍可到达服务端；若已有一条尚未开始
-推理的观测，更新的观测会替换它。模型推理本身保持串行。相似过滤默认关闭，需要时显式传入例如
-`--observation-similarity-epsilon 0.01`。该判断不比较图像，机器人关节不变但物体发生移动的任务应
-保持关闭或先做针对性验证。需要回退时使用 `--async-observation-mode legacy`。
-
-真机相机读取默认使用 LeRobot 的最新缓存帧，避免三台相机依次阻塞控制循环。使用 `--log-control` 时，
-`async_observation_queued` 会记录 `observation_capture_ms`；`async_observation_result` 会记录合并前后
-队列长度和重叠动作数；每条 `control_step` 同时保留模型 `raw_action`、队列 `queued_action`、边界
-`blended_action` 以及 `source_changed`/`blend_step`，便于区分采集停顿、动作块合并和最终下发值。
-
-策略服务端也兼容参考仓库的命名，例如：
-
-```bash
-python scripts/xtrainer/serve_policy.py \
-  --model-path outputs/train/xtrainer_smolvla_full/checkpoints/last/pretrained_model \
-  --device cuda --host 0.0.0.0 --port 8000 --use-length 50
+```text
+tools/install_xtrainer_env.sh
+tools/download_smolvla_weights_hf.sh
+scripts/xtrainer/convert_raw_to_lerobot_2_1.py
+scripts/xtrainer/validate_dataset_v21.py
+scripts/xtrainer/train_smolvla.sh
+scripts/xtrainer/serve_policy.py
+scripts/xtrainer/run_real.py
+configs/xtrainer/train_smolvla.yaml
+configs/xtrainer/deploy.yaml
 ```
-
-`--use-length 50` 是服务端每次生成的动作数；客户端的 `--action-horizon 5` 仍只会采用其中前
-5 步。因此在 30 Hz 下，`--max-steps 100` 会在约 3.3 秒后正常结束，不代表推理只成功了两次。
-
-真实策略服务会把 14 维 `reset_pose` 放进 metadata。机器人端会在机械臂使能后，按照 LingBot 的方式由当前位置
-生成完整 `linspace` 插值并连续下发，最后一步保证到达目标；插值过程不额外等待 30 Hz 控制周期，然后才请求模型动作。
-`--ramp-step` 用于估算步数，`--ramp-max-steps` 限制最多步数。默认复位姿态来自 X-trainer 部署配置；如果该姿态
-不适合当前工作台、末端工具或关节限位，应先停止部署并修改服务端配置，不能依赖运行时安全阈值替代人工确认。
-首次真实策略运行前，必须先确认 Dobot 能接受该 reset pose；若控制器返回 `-1,{},ServoJ(...)`，立即停止，
-不要通过忽略错误或重复执行命令来继续任务。
-
-确认短流程稳定后，再逐步增加 `--max-steps` 或 `--action-horizon`。每次只调整一项，便于判断
-异常来自模型动作、网络延迟还是硬件控制。
-
-## 常见问题
-
-### 服务端能启动，但机器人端连接失败
-
-确认机器人端的 `--host` 使用策略机的局域网 IP，而不是策略机自己的 `127.0.0.1`；同时检查 TCP 8000
-端口和防火墙。服务端绑定 `0.0.0.0` 只表示监听所有网卡，它不是机器人端应填写的目标地址。
-
-### 训练启动时提示 `policy: Could not decode ... got {'device': 'cuda'}`
-
-这表示当前代码没有把 `--policy.device` 正确延后到基础模型配置加载阶段，不是数据集校验失败。确认仓库包含
-`src/lerobot/configs/parser.py` 的 YAML `policy.path` 二次过滤修复后，保留 `--device cuda` 原样重试即可。
-
-### 提示状态或动作不是 14 维
-
-训练数据、策略 metadata 和真机客户端必须使用同一套 14 维顺序。不要对某一侧单独调整关节或夹爪排列；
-应从数据集字段、checkpoint 和部署配置一起检查。
-
-### 夹爪无法连接
-
-先确认串口设备名和 ID，没有权限时配置 `dialout` 用户组并重新登录。左右串口接反会使动作发送给错误夹爪，
-因此不应通过反复尝试动作来判断映射。
-
-### RealSense 无法打开
-
-确认三台相机没有被其他程序占用、USB 带宽足够，并核对序列号。顶部、左腕和右腕图像即使分辨率相同也不能
-互换，因为训练数据中的语义键是固定的。
-
-### 真实策略连接后机械臂开始复位
-
-这是 `reset_pose` metadata 的预期行为，不代表模型已经开始执行任务。如果实际复位方向或姿态不安全，应立即
-急停并检查左右臂映射、关节单位和复位值，不能继续等待策略自行纠正。

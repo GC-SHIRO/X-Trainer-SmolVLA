@@ -465,6 +465,7 @@ async def run_async_control_loop(
     control_hz: float,
     max_steps: int,
     prefetch_threshold: float,
+    observation_hz: float,
     request_timeout_s: float,
     max_delta_per_step: float,
     chunk_blend_steps: int = 6,
@@ -505,7 +506,10 @@ async def run_async_control_loop(
     blend_anchor: np.ndarray | None = None
     blend_index = chunk_blend_steps
     fallback_started_at: float | None = None
+    was_fallback = False
     period = 1.0 / control_hz
+    observation_period = 1.0 / observation_hz
+    next_observation_at = monotonic_fn()
     deadline = monotonic_fn()
 
     for step in range(max_steps):
@@ -552,6 +556,7 @@ async def run_async_control_loop(
 
         timed_action = action_queue.pop(step, None)
         used_fallback = timed_action is None
+        entered_fallback = used_fallback and not was_fallback
         if timed_action is None:
             if last_sent_action is None:
                 raise RuntimeError(f"No action available for timestep {step}")
@@ -612,10 +617,14 @@ async def run_async_control_loop(
                 applied_action=last_sent_action.tolist(),
             )
 
-        should_submit = used_fallback or _should_prefetch(
+        in_prefetch_window = _should_prefetch(
             len(action_queue),
             action_horizon,
             prefetch_threshold,
+        )
+        now = monotonic_fn()
+        should_submit = entered_fallback or (
+            (used_fallback or in_prefetch_window) and now >= next_observation_at
         )
         if should_submit:
             observation_timestep = step + 1
@@ -625,24 +634,29 @@ async def run_async_control_loop(
             observation_id = policy.submit_observation(
                 payload,
                 observation_timestep=observation_timestep,
-                must_go=used_fallback,
+                must_go=entered_fallback,
             )
+            next_observation_at = monotonic_fn() + observation_period
             if control_log is not None:
                 control_log.write(
                     "async_observation_queued",
+                    "async_observation_queued",
                     observation_id=observation_id,
                     observation_timestep=observation_timestep,
-                    must_go=used_fallback,
+                    must_go=entered_fallback,
                     remaining_actions=len(action_queue),
                     observation_capture_ms=capture_ms,
                 )
 
+        was_fallback = used_fallback
+
         deadline += period
         remaining = deadline - monotonic_fn()
-        if remaining > 0:
-            await sleep_fn(remaining)
-        else:
+        if remaining <= 0:
             deadline = monotonic_fn()
+        # Always yield, including after an overrun.  The async transport's
+        # sender and receiver tasks otherwise cannot send observations or ACKs.
+        await sleep_fn(max(remaining, 0.0))
     _LOGGER.info("Reached --max-steps=%d; ending the async control loop", max_steps)
 
 
@@ -834,6 +848,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         "camera_width": args.camera_width,
         "camera_height": args.camera_height,
         "request_timeout": args.request_timeout,
+        "observation_hz": args.observation_hz,
     }
     invalid = [name for name, value in positive_values.items() if value <= 0]
     if invalid:
