@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
+import scripts.xtrainer.run_real as run_real_module
 from deploy.xtrainer.msgpack_numpy import protocol_metadata
 from deploy.xtrainer.real.environment import (
     LEFT_WRIST_IMAGE_KEY,
@@ -440,3 +441,36 @@ def test_run_requires_explicit_execute_before_connecting_resources():
 
     assert not policy.connected
     assert not environment.reset_called
+
+
+def test_run_passes_observation_rate_only_to_latest_loop(monkeypatch):
+    class LatestPolicy(MockPolicy):
+        async def start_async(self, epsilon):
+            assert epsilon is None
+
+    captured = {}
+
+    async def fake_async_loop(_policy, _environment, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(run_real_module, "run_async_control_loop", fake_async_loop)
+    args = parse_args(
+        [
+            "--host",
+            "127.0.0.1",
+            "--execute",
+            "--observation-hz",
+            "12",
+            "--max-steps",
+            "1",
+        ]
+    )
+    policy = LatestPolicy([np.zeros((1, 14))])
+    environment = MockEnvironment()
+
+    asyncio.run(run(args, policy=policy, environment=environment))
+
+    assert captured["observation_hz"] == pytest.approx(12.0)
+    assert captured["chunk_blend_steps"] == 6
+    assert environment.closed
+    assert policy.closed

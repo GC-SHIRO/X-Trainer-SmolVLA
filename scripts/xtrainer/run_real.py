@@ -640,7 +640,6 @@ async def run_async_control_loop(
             if control_log is not None:
                 control_log.write(
                     "async_observation_queued",
-                    "async_observation_queued",
                     observation_id=observation_id,
                     observation_timestep=observation_timestep,
                     must_go=entered_fallback,
@@ -792,6 +791,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--prefetch-threshold", type=float, default=0.7)
     parser.add_argument(
+        "--observation-hz",
+        type=float,
+        default=10.0,
+        help="Maximum latest-observation submission rate; control actions keep their own rate",
+    )
+    parser.add_argument(
         "--chunk-blend-steps",
         type=int,
         default=6,
@@ -907,19 +912,25 @@ async def run(
             active_environment.smooth_reset(reset_pose)
         await policy.reset()
 
-        control_loop = run_async_control_loop if args.async_observation_mode == "latest" else run_control_loop
-        await control_loop(
-            policy,
-            active_environment,
-            action_horizon=args.action_horizon,
-            control_hz=args.control_hz,
-            max_steps=args.max_steps,
-            prefetch_threshold=args.prefetch_threshold,
-            request_timeout_s=args.request_timeout,
-            max_delta_per_step=args.max_delta_per_step,
-            chunk_blend_steps=args.chunk_blend_steps,
-            control_log=control_log,
-        )
+        loop_kwargs = {
+            "action_horizon": args.action_horizon,
+            "control_hz": args.control_hz,
+            "max_steps": args.max_steps,
+            "prefetch_threshold": args.prefetch_threshold,
+            "request_timeout_s": args.request_timeout,
+            "max_delta_per_step": args.max_delta_per_step,
+            "chunk_blend_steps": args.chunk_blend_steps,
+            "control_log": control_log,
+        }
+        if args.async_observation_mode == "latest":
+            await run_async_control_loop(
+                policy,
+                active_environment,
+                observation_hz=args.observation_hz,
+                **loop_kwargs,
+            )
+        else:
+            await run_control_loop(policy, active_environment, **loop_kwargs)
     finally:
         if active_environment is not None:
             active_environment.close()

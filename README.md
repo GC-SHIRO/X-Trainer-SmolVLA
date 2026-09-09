@@ -341,7 +341,7 @@ python scripts/xtrainer/serve_policy.py \
 
 ## 13. 启动真机任务
 
-首次运行使用较小步数和动作增量：
+首次运行使用较小动作块和较少控制步数：
 
 ```bash
 conda activate xtrainer-smolvla
@@ -349,11 +349,22 @@ python scripts/xtrainer/run_real.py \
   --host <策略机IP> --port 8000 \
   --task "将桌面上的方块放入收纳盒" \
   --left-robot-ip 192.168.5.1 --right-robot-ip 192.168.5.2 \
-  --action-horizon 5 --control-hz 10 --max-steps 100 \
-  --max-joint-delta 0.03 --max-gripper-delta 0.02 --execute
+  --action-horizon 5 --control-hz 30 --max-steps 100 \
+  --execute
 ```
 
-`--host` 填策略机局域网 IP；仅在同机运行时使用 `127.0.0.1`。确认 reset pose、左右臂映射和夹爪方向后再增加运行步数，全程保持急停可触达。
+`--host` 填策略机局域网 IP；仅在同机运行时使用 `127.0.0.1`。默认使用路线 A 的 `latest` 模式，
+观测最多按 `--observation-hz 10` 提交，动作仍按 `--control-hz 30` 下发。三台相机读取最新缓存帧，
+避免依次等待新帧阻塞控制循环。
+
+动作来源切换后默认使用 `--chunk-blend-steps 6`，从上一条实际下发动作平滑过渡；只处理 12 个关节，
+夹爪保持原始策略值。传入 `--chunk-blend-steps 0` 可关闭。`--max-joint-delta` 和
+`--max-gripper-delta` 默认无穷大，`--max-delta-per-step` 默认 `0`，均不改写策略动作；夹爪 `[0,1]`
+合法范围和 NaN/Inf 检查仍然保留。
+
+使用 `--log-control` 时，日志会记录 `observation_capture_ms`、动作队列合并前后长度、`raw_action`、
+`queued_action`、`blended_action`、`source_changed` 和 `blend_step`。确认 reset pose、左右臂映射和
+夹爪方向后再增加运行步数，全程保持急停可触达。
 
 ## 14. 关键文件索引
 

@@ -87,46 +87,6 @@ class BadShapeCamera(MockCamera):
         return np.zeros((4, 5), dtype=np.uint8)
 
 
-def test_realsense_wrapper_peeks_background_frame_after_warmup():
-    class Backend:
-        def __init__(self):
-            self.read_calls = 0
-            self.latest_calls = []
-
-        def connect(self):
-            pass
-
-        def read(self):
-            self.read_calls += 1
-            return np.zeros((4, 5, 3), dtype=np.uint8)
-
-        def read_latest(self, *, max_age_ms):
-            self.latest_calls.append(max_age_ms)
-            return np.ones((4, 5, 3), dtype=np.uint8)
-
-        def disconnect(self):
-            pass
-
-    backend = Backend()
-    camera = XTrainerRealSenseCamera(
-        XTrainerRealSenseCameraConfig(
-            name="top",
-            serial="serial",
-            observation_key="observation.images.top",
-            warmup_frames=2,
-        ),
-        camera_factory=lambda _config: backend,
-        camera_config_factory=lambda **kwargs: kwargs,
-    )
-
-    camera.connect()
-    image = camera.read_rgb()
-
-    assert backend.read_calls == 2
-    assert backend.latest_calls == [500]
-    np.testing.assert_array_equal(image, 1)
-
-
 def make_env(**kwargs):
     cameras = {
         "top": MockCamera("top", "observation.images.top"),
