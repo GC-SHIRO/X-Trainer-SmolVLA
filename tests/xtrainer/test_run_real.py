@@ -151,7 +151,7 @@ def test_policy_payload_applies_top_camera_crop_and_flips_only():
     np.testing.assert_array_equal(payload["images"]["right_wrist"], right_wrist_image)
 
 
-def test_merge_drops_stale_actions_and_blends_matching_timesteps():
+def test_merge_drops_stale_actions_and_uses_latest_targets():
     old = {
         timestep: TimedAction(np.zeros(14), observation_timestep=0, timestep=timestep)
         for timestep in (5, 6, 7)
@@ -161,9 +161,9 @@ def test_merge_drops_stale_actions_and_blends_matching_timesteps():
     merged = _merge_action_queue(old, incoming, current_timestep=5)
 
     assert tuple(merged) == (5, 6, 7)
-    np.testing.assert_allclose(merged[5].action, 7.0)
-    np.testing.assert_allclose(merged[6].action, 7.0)
-    np.testing.assert_allclose(merged[7].action, 7.0)
+    np.testing.assert_allclose(merged[5].action, 10.0)
+    np.testing.assert_allclose(merged[6].action, 10.0)
+    np.testing.assert_allclose(merged[7].action, 10.0)
     assert all(action.observation_timestep == 4 for action in merged.values())
 
 
@@ -173,7 +173,7 @@ def test_merge_uses_new_action_directly_after_overlap():
 
     merged = _merge_action_queue(old, incoming, current_timestep=3)
 
-    np.testing.assert_allclose(merged[3].action, 7.0)
+    np.testing.assert_allclose(merged[3].action, 10.0)
     np.testing.assert_allclose(merged[4].action, 10.0)
     np.testing.assert_allclose(merged[5].action, 10.0)
 
@@ -187,7 +187,7 @@ def test_final_rate_limit_runs_after_blending():
 
 
 def test_chunk_blend_smooths_only_joints_and_finishes_on_step_six():
-    anchor = np.zeros(14)
+    anchor = np.full(14, -6.0)
     target = np.full(14, 6.0)
 
     first = _blend_chunk_action(target, anchor, index=0, blend_steps=6)
@@ -309,7 +309,7 @@ def test_control_loop_blends_returned_prefetch_and_keeps_one_request_in_flight()
     assert len(environment.actions) == 3
     np.testing.assert_allclose(environment.actions[0], 0.0)
     np.testing.assert_allclose(environment.actions[1], 0.0)
-    np.testing.assert_allclose(environment.actions[2], 7.0)
+    np.testing.assert_allclose(environment.actions[2], 10.0)
     assert policy.max_active_infers == 1
     assert set(policy.payloads[0]) == {"state", "images", "task"}
     assert set(policy.payloads[0]["images"]) == {"top", "left_wrist", "right_wrist"}

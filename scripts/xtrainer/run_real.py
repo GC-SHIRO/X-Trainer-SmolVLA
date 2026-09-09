@@ -46,8 +46,6 @@ from deploy.xtrainer.real.hardware.realsense_camera import (
 from deploy.xtrainer.websocket_client_policy import XTrainerWebSocketPolicyClient
 
 ACTION_DIM = 14
-OLD_ACTION_WEIGHT = 0.3
-NEW_ACTION_WEIGHT = 0.7
 DEFAULT_CONTROL_LOG_DIR = REPO_ROOT / "outputs" / "xtrainer" / "control_logs"
 _LOGGER = logging.getLogger(__name__)
 
@@ -141,17 +139,14 @@ def _merge_action_queue(
     *,
     current_timestep: int,
 ) -> dict[int, TimedAction]:
-    """Replace future actions with a new chunk, blending matching timesteps."""
+    """按时间对齐最新轨迹；关节衔接只在下发前处理，夹爪不混合。"""
 
     merged: dict[int, TimedAction] = {}
     for index, new_action in enumerate(result.actions):
         timestep = result.observation_timestep + index
         if timestep < current_timestep:
             continue
-        old_action = current_queue.get(timestep)
         action = np.asarray(new_action, dtype=np.float64).copy()
-        if old_action is not None:
-            action = OLD_ACTION_WEIGHT * old_action.action + NEW_ACTION_WEIGHT * action
         merged[timestep] = TimedAction(
             action=action,
             observation_timestep=result.observation_timestep,
@@ -178,18 +173,18 @@ def _rate_limit_action(
 
 
 def _blend_chunk_action(
-    action: np.ndarray, anchor: np.ndarray | None, index: int, blend_steps: int
+    action: np.ndarray, offset: np.ndarray | None, index: int, blend_steps: int
 ) -> np.ndarray:
-    """仅平滑新动作来源开头的关节目标，夹爪保持模型原值。"""
+    """保持新轨迹的逐步运动，仅将换块时的固定关节偏差衰减到零。"""
 
     target = np.asarray(action, dtype=np.float64).copy()
-    if anchor is None or blend_steps <= 0 or index >= blend_steps - 1:
+    if offset is None or blend_steps <= 1 or index >= blend_steps - 1:
         return target
-    # smoothstep 从上一条实际下发动作过渡，最后一步精确恢复当前轨迹。
+    # 首步已开始消除偏差，避免频繁换块反复原地保持；第 N 步回到新轨迹。
     progress = (index + 1) / blend_steps
     weight = progress * progress * (3.0 - 2.0 * progress)
     joints = np.r_[0:6, 7:13]
-    target[joints] = anchor[joints] + weight * (target[joints] - anchor[joints])
+    target[joints] += (1.0 - weight) * offset[joints]
     return target
 
 
@@ -267,6 +262,8 @@ async def _request_action_chunk(
             observation_timestep=observation_timestep,
             returned_action_count=int(returned_count),
             retained_actions=selected_actions.tolist(),
+            returned_actions=raw_actions.reshape(-1, ACTION_DIM).tolist(),
+            client_received_at_utc=datetime.now(timezone.utc).isoformat(),
         )
     _LOGGER.info(
         "Policy inference for observation step %d returned %d actions; client retained %d (action horizon=%d)",
@@ -312,7 +309,7 @@ async def run_control_loop(
     )
     last_sent_action: np.ndarray | None = None
     active_source_timestep: int | None = None
-    blend_anchor: np.ndarray | None = None
+    blend_offset: np.ndarray | None = None
     blend_index = chunk_blend_steps
     pending_request: asyncio.Task[InferenceResult] | None = None
     period = 1.0 / control_hz
@@ -359,7 +356,7 @@ async def run_control_loop(
                 and timed_action.observation_timestep != active_source_timestep
             )
             if timed_action is not None and timed_action.observation_timestep != active_source_timestep:
-                blend_anchor = last_sent_action.copy() if source_changed and last_sent_action is not None else None
+                blend_offset = last_sent_action - queued_action if source_changed and last_sent_action is not None else None
                 blend_index = 0
                 active_source_timestep = timed_action.observation_timestep
             if timed_action is None:
@@ -367,11 +364,11 @@ async def run_control_loop(
                 active_blend_step = None
             else:
                 blended_action = _blend_chunk_action(
-                    queued_action, blend_anchor, blend_index, chunk_blend_steps
+                    queued_action, blend_offset, blend_index, chunk_blend_steps
                 )
                 active_blend_step = (
                     blend_index + 1
-                    if blend_anchor is not None and blend_index < chunk_blend_steps
+                    if blend_offset is not None and blend_index < chunk_blend_steps
                     else None
                 )
                 blend_index += 1
@@ -388,6 +385,7 @@ async def run_control_loop(
                         None if timed_action is None else timed_action.observation_timestep
                     ),
                     used_fallback=used_fallback,
+                    action_index=None if timed_action is None else step - timed_action.observation_timestep,
                     raw_action=(
                         None
                         if timed_action is None or timed_action.raw_action is None
@@ -457,6 +455,17 @@ def _result_from_observation_event(event: dict[str, Any], action_horizon: int) -
     )
 
 
+def _result_trace_fields(event: dict[str, Any], result: InferenceResult | None) -> dict[str, Any]:
+    """保留完整返回块（含未执行前缀/尾部），不能把截断后的块当成原始输出。"""
+    actions = None if result is None else np.asarray(event["payload"]["action"]).reshape(-1, ACTION_DIM)
+    return {
+        "client_received_at_utc": event.get("client_received_at_utc"),
+        "returned_actions": None if actions is None else actions.tolist(),
+        "returned_action_count": 0 if actions is None else len(actions),
+        "retained_action_count": 0 if result is None else len(result.actions),
+    }
+
+
 async def run_async_control_loop(
     policy: Any,
     environment: Any,
@@ -475,8 +484,10 @@ async def run_async_control_loop(
 ) -> None:
     """Run the control loop while continuously replacing the pending observation."""
 
+    capture_started_at_utc = datetime.now(timezone.utc).isoformat()
     capture_started_at = monotonic_fn()
     initial_payload = _policy_payload(environment.get_observation())
+    observation_ready_at_utc = datetime.now(timezone.utc).isoformat()
     capture_ms = (monotonic_fn() - capture_started_at) * 1000.0
     initial_observation_id = policy.submit_observation(
         initial_payload,
@@ -491,10 +502,25 @@ async def run_async_control_loop(
             must_go=True,
             remaining_actions=0,
             observation_capture_ms=capture_ms,
+            state=np.asarray(initial_payload["state"], dtype=np.float64).tolist(),
+            task=str(initial_payload["task"]),
+            capture_started_at_utc=capture_started_at_utc,
+            observation_ready_at_utc=observation_ready_at_utc,
+            last_applied_action=None,
         )
     while True:
         event = await policy.next_observation_event(timeout_s=request_timeout_s)
         initial_result = _result_from_observation_event(event, action_horizon)
+        if control_log is not None:
+            control_log.write(
+                "async_observation_result",
+                control_timestep=0,
+                observation_timestep=event.get("observation_timestep"),
+                observation_id=event.get("observation_id"),
+                status=event.get("status"),
+                server_timing=event.get("server_timing"),
+                **_result_trace_fields(event, initial_result),
+            )
         if initial_result is not None:
             break
     action_queue = _merge_action_queue({}, initial_result, current_timestep=0)
@@ -503,7 +529,7 @@ async def run_async_control_loop(
 
     last_sent_action: np.ndarray | None = None
     active_source_timestep: int | None = None
-    blend_anchor: np.ndarray | None = None
+    blend_offset: np.ndarray | None = None
     blend_index = chunk_blend_steps
     fallback_started_at: float | None = None
     was_fallback = False
@@ -539,8 +565,9 @@ async def run_async_control_loop(
                     status=event.get("status"),
                     server_timing=event.get("server_timing"),
                     queue_before_merge=queue_before_merge,
-                    queue_after_merge=(queue_before_merge if merged is None else len(merged)),
+                    queue_after_merge=(len(merged) if merged else queue_before_merge),
                     overlap_action_count=overlap_action_count,
+                    **_result_trace_fields(event, result),
                 )
             if result is None:
                 continue
@@ -575,7 +602,7 @@ async def run_async_control_loop(
             and timed_action.observation_timestep != active_source_timestep
         )
         if timed_action is not None and timed_action.observation_timestep != active_source_timestep:
-            blend_anchor = last_sent_action.copy() if source_changed and last_sent_action is not None else None
+            blend_offset = last_sent_action - queued_action if source_changed and last_sent_action is not None else None
             blend_index = 0
             active_source_timestep = timed_action.observation_timestep
         if timed_action is None:
@@ -583,11 +610,11 @@ async def run_async_control_loop(
             active_blend_step = None
         else:
             blended_action = _blend_chunk_action(
-                queued_action, blend_anchor, blend_index, chunk_blend_steps
+                queued_action, blend_offset, blend_index, chunk_blend_steps
             )
             active_blend_step = (
                 blend_index + 1
-                if blend_anchor is not None and blend_index < chunk_blend_steps
+                if blend_offset is not None and blend_index < chunk_blend_steps
                 else None
             )
             blend_index += 1
@@ -604,6 +631,7 @@ async def run_async_control_loop(
                     None if timed_action is None else timed_action.observation_timestep
                 ),
                 used_fallback=used_fallback,
+                action_index=None if timed_action is None else step - timed_action.observation_timestep,
                 raw_action=(
                     None
                     if timed_action is None or timed_action.raw_action is None
@@ -628,8 +656,10 @@ async def run_async_control_loop(
         )
         if should_submit:
             observation_timestep = step + 1
+            capture_started_at_utc = datetime.now(timezone.utc).isoformat()
             capture_started_at = monotonic_fn()
             payload = _policy_payload(environment.get_observation())
+            observation_ready_at_utc = datetime.now(timezone.utc).isoformat()
             capture_ms = (monotonic_fn() - capture_started_at) * 1000.0
             observation_id = policy.submit_observation(
                 payload,
@@ -645,6 +675,11 @@ async def run_async_control_loop(
                     must_go=entered_fallback,
                     remaining_actions=len(action_queue),
                     observation_capture_ms=capture_ms,
+                    state=np.asarray(payload["state"], dtype=np.float64).tolist(),
+                    task=str(payload["task"]),
+                    capture_started_at_utc=capture_started_at_utc,
+                    observation_ready_at_utc=observation_ready_at_utc,
+                    last_applied_action=last_sent_action.tolist(),
                 )
 
         was_fallback = used_fallback
@@ -800,7 +835,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--chunk-blend-steps",
         type=int,
         default=6,
-        help="Smooth joint targets for this many steps after the action source changes; 0 disables it",
+        help="Decay the joint splice offset over this many steps; 0 disables it (grippers use latest targets)",
     )
     parser.add_argument(
         "--async-observation-mode",

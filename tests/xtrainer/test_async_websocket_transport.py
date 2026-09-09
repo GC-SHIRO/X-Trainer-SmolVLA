@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import threading
 import time
 
@@ -77,6 +78,7 @@ def test_latest_mode_replaces_only_pending_observation_and_keeps_health_responsi
             policy.release.set()
 
             events = [await client.next_observation_event(2) for _ in range(3)]
+            assert all(datetime.fromisoformat(event["client_received_at_utc"]).tzinfo for event in events)
             assert {event["status"] for event in events} == {"actions", "superseded"}
             assert sum(event["status"] == "actions" for event in events) == 2
             assert policy.calls == [1, 3]

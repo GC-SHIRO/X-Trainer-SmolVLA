@@ -26,9 +26,6 @@ xtrainer:
   chunk_size: 50
   prefetch_threshold: 0.7
   observation_hz: 10
-  overlap_blend:
-    old_weight: 0.3
-    new_weight: 0.7
   chunk_blend_steps: 6
   observation_keys:
     state: observation.state

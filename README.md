@@ -357,14 +357,21 @@ python scripts/xtrainer/run_real.py \
 观测最多按 `--observation-hz 10` 提交，动作仍按 `--control-hz 30` 下发。三台相机读取最新缓存帧，
 避免依次等待新帧阻塞控制循环。
 
-动作来源切换后默认使用 `--chunk-blend-steps 6`，从上一条实际下发动作平滑过渡；只处理 12 个关节，
-夹爪保持原始策略值。传入 `--chunk-blend-steps 0` 可关闭。`--max-joint-delta` 和
+动作来源切换后默认使用 `--chunk-blend-steps 6`：计算上一条下发目标与新轨迹首个可用目标的关节偏差，
+后续输出为“新轨迹当前目标 + 衰减中的固定偏差”。首步保留约 92.6% 偏差，第 6 步偏差归零；
+再次换块时从当前已下发目标重新计算偏差。这样新轨迹自身的下降、旋转仍能继续推进，但高频换块仍可能
+产生跟踪滞后，需要结合实测状态验证。旧的 `0.3/0.7` 队列混合已移除，夹爪直接采用时间对齐后的
+最新模型目标。传入 `--chunk-blend-steps 0` 可关闭衔接处理。`--max-joint-delta` 和
 `--max-gripper-delta` 默认无穷大，`--max-delta-per-step` 默认 `0`，均不改写策略动作；夹爪 `[0,1]`
 合法范围和 NaN/Inf 检查仍然保留。
 
-使用 `--log-control` 时，日志会记录 `observation_capture_ms`、动作队列合并前后长度、`raw_action`、
-`queued_action`、`blended_action`、`source_changed` 和 `blend_step`。确认 reset pose、左右臂映射和
-夹爪方向后再增加运行步数，全程保持急停可触达。
+使用 `--log-control` 时，观测提交记录包含读取到的 14 维实测 `state`、`last_applied_action`、采集起止时间
+和 `observation_capture_ms`，复用现有读取，不额外查询硬件。返回事件（包括首次推理）记录完整
+`returned_actions`、返回/保留数量和客户端收包解码后的 `client_received_at_utc`；事件自身
+`timestamp_utc` 是控制循环处理日志的时间。每步保留 `raw_action`、`queued_action`、`blended_action`、
+`source_changed`、`blend_step` 以及 `action_index`（完整返回块中从 0 开始的索引，fallback 为 null）。
+`applied_action` 是下发目标，不能当成实测位置；关节状态也不是末端 Z 高度。确认 reset pose、左右臂
+映射和夹爪方向后再增加运行步数，全程保持急停可触达。
 
 ## 14. 关键文件索引
 

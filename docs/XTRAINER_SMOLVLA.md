@@ -387,7 +387,7 @@ python scripts/xtrainer/run_real.py \
 | `--max-joint-delta`    | 默认关闭   | 可选的单步关节变化限幅；默认无穷大，不改写策略动作。                                           |
 | `--max-gripper-delta`  | 默认关闭   | 可选的单步夹爪变化限幅；默认无穷大。                                                           |
 | `--max-delta-per-step` | 默认关闭   | 可选的最终逐维限幅；默认`0`，不改写策略动作。                                                |
-| `--chunk-blend-steps`  | 默认`6`   | 每次动作来源切换后，用 6 个现有控制步从上一条实际动作平滑过渡；只处理 12 个关节，`0` 可关闭。 |
+| `--chunk-blend-steps`  | 默认`6`   | 换块时计算关节衔接偏差，将其加到新轨迹并用 6 步衰减到零；夹爪直接采用最新目标，`0` 可关闭。 |
 | `--ramp-step`          | 默认`0.01` | 自动 reset 时用于计算插值步数的期望变化量，单位为弧度。                                        |
 | `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数；距离较大时仍会在最后一步完整到达目标。                              |
 | `--async-observation-mode` | 默认`latest` | 推理期间持续提交观测，服务端只保留尚未推理的最新一条；`legacy` 可回退到原单请求模式。        |
@@ -408,6 +408,16 @@ python scripts/xtrainer/run_real.py \
 `async_observation_queued` 会记录 `observation_capture_ms`；`async_observation_result` 会记录合并前后
 队列长度和重叠动作数；每条 `control_step` 同时保留模型 `raw_action`、队列 `queued_action`、边界
 `blended_action` 以及 `source_changed`/`blend_step`，便于区分采集停顿、动作块合并和最终下发值。
+
+旧的 `0.3/0.7` 队列混合已移除。衔接偏差固定为“上一条下发目标 − 新块首个可用目标”，随后输出
+“新轨迹当前目标 + 衰减偏差”，首步保留约 92.6% 偏差，第 6 步归零；中途换块从当前下发目标重新计算。
+这保留了新轨迹本身的运动，不再反复从固定位置缩放整条轨迹；高频换块下仍需检查跟踪滞后。
+
+观测提交日志还记录复用现有硬件读取的 14 维 `state`、`last_applied_action`、`capture_started_at_utc`
+和 `observation_ready_at_utc`。返回事件（含首次推理）记录完整 `returned_actions`、
+`returned_action_count`、`retained_action_count` 及收包解码后的 `client_received_at_utc`，以事件
+`timestamp_utc` 区分控制循环消费时间。控制步的 `action_index` 是完整返回块内的零基索引，fallback
+时为 null。`applied_action` 是下发目标，只有观测 `state` 是读取到的状态，均不能直接当作末端 Z 高度。
 
 策略服务端也兼容参考仓库的命名，例如：
 

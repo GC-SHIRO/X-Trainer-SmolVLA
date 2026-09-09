@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from .msgpack_numpy import PROTOCOL_VERSION, ProtocolError, dumps, loads
@@ -214,6 +215,8 @@ class XTrainerWebSocketPolicyClient:
                     if waiter is not None and not waiter.done():
                         waiter.set_result(message)
                 elif message_type == "observation_result":
+                    # 接收时间独立于控制循环消费时间，避免把队列等待误算成推理耗时。
+                    message["client_received_at_utc"] = datetime.now(timezone.utc).isoformat()
                     self._events.put_nowait(message)
                 else:
                     waiter = self._rpc_waiters.get(message.get("request_id"))
