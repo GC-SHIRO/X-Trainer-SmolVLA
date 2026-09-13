@@ -57,6 +57,7 @@ class XTrainerRealEnvironment:
     _last_state: np.ndarray | None = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
     _enabled_arms: list[Any] = field(default_factory=list, init=False, repr=False)
+    last_action_timing_ms: dict[str, float] = field(default_factory=dict, init=False)
 
     def reset(self) -> dict[str, Any]:
         self._closed = False
@@ -65,10 +66,16 @@ class XTrainerRealEnvironment:
         return self.get_observation()
 
     def get_observation(self) -> dict[str, Any]:
-        state = self._read_state()
-        camera_observations = self._read_images()
-        self._last_state = state.copy()
-        return {STATE_KEY: state, **camera_observations, TASK_KEY: self.task}
+        observation = self.get_observation_snapshot()
+        self._last_state = observation[STATE_KEY].copy()
+        return observation
+
+    def get_observation_snapshot(self) -> dict[str, Any]:
+        """后台只读取反馈；不能用稍早的采集结果覆盖主循环的下发基准。"""
+        timing: dict[str, float] = {}
+        state = self._read_state(timing)
+        camera_observations = self._read_images(timing)
+        return {STATE_KEY: state, **camera_observations, TASK_KEY: self.task, "observation.timing_ms": timing}
 
     def apply_action(self, action: Any, *, pace: bool = True) -> np.ndarray:
         """Validate, limit, and send one action.
@@ -82,10 +89,21 @@ class XTrainerRealEnvironment:
             self._last_state = self._read_state()
         limited = self._limit_action(action, self._last_state)
 
-        self.left_arm.move_joints(limited[:6])
-        self.right_arm.move_joints(limited[7:13])
-        self._write_gripper_if_needed(self.left_gripper, limited[6], self._last_state[6])
-        self._write_gripper_if_needed(self.right_gripper, limited[13], self._last_state[13])
+        timing: dict[str, float] = {}
+        for name, arm, joints in (
+            ("left_arm", self.left_arm, limited[:6]), ("right_arm", self.right_arm, limited[7:13])
+        ):
+            started = time.monotonic()
+            arm.move_joints(joints)
+            timing[f"{name}_write_ms"] = (time.monotonic() - started) * 1000
+        for name, gripper, index in (
+            ("left_gripper", self.left_gripper, 6), ("right_gripper", self.right_gripper, 13)
+        ):
+            started = time.monotonic()
+            wrote = self._write_gripper_if_needed(gripper, limited[index], self._last_state[index])
+            timing[f"{name}_write_ms"] = (time.monotonic() - started) * 1000
+            timing[f"{name}_lock_wait_ms"] = getattr(gripper, "last_write_lock_wait_ms", 0.0) if wrote else 0.0
+        self.last_action_timing_ms = timing
         if pace:
             self._sleep_control_period()
         self._last_state = limited.copy()
@@ -175,27 +193,40 @@ class XTrainerRealEnvironment:
         except Exception:
             _LOGGER.warning("Failed to disable X-trainer arm %r", arm, exc_info=True)
 
-    def _read_state(self) -> np.ndarray:
-        left = np.asarray(self.left_arm.read_joints(), dtype=np.float64)
-        right = np.asarray(self.right_arm.read_joints(), dtype=np.float64)
+    def _read_state(self, timing: dict[str, float] | None = None) -> np.ndarray:
+        timing = {} if timing is None else timing
+        values = []
+        for name, reader in (
+            ("left_arm", self.left_arm.read_joints), ("right_arm", self.right_arm.read_joints),
+            ("left_gripper", self.left_gripper.read), ("right_gripper", self.right_gripper.read),
+        ):
+            started = time.monotonic()
+            values.append(reader())
+            timing[f"{name}_read_ms"] = (time.monotonic() - started) * 1000
+        left, right = (np.asarray(value, dtype=np.float64) for value in values[:2])
         if left.shape != (6,):
             raise ValueError(f"left arm state must have shape (6,), got {left.shape}")
         if right.shape != (6,):
             raise ValueError(f"right arm state must have shape (6,), got {right.shape}")
-        left_gripper = float(self.left_gripper.read())
-        right_gripper = float(self.right_gripper.read())
+        left_gripper, right_gripper = map(float, values[2:])
         state = np.concatenate([left, [left_gripper], right, [right_gripper]]).astype(np.float32)
         if not np.all(np.isfinite(state)):
             raise ValueError("X-trainer state contains NaN or Inf")
         return state
 
-    def _read_images(self) -> dict[str, np.ndarray]:
+    def _read_images(self, timing: dict[str, float] | None = None) -> dict[str, np.ndarray]:
+        timing = {} if timing is None else timing
         observations = {}
         for name, camera in self.cameras.items():
             config = getattr(camera, "config", None)
             observation_key = getattr(config, "observation_key", DEFAULT_XTRAINER_CAMERA_CONFIGS[name].observation_key)
+            started = time.monotonic()
             observations[observation_key] = camera.read_rgb()
-        return validate_camera_observations(observations, IMAGE_KEYS)
+            timing[f"{name}_camera_ms"] = (time.monotonic() - started) * 1000
+        started = time.monotonic()
+        validated = validate_camera_observations(observations, IMAGE_KEYS)
+        timing["image_validation_ms"] = (time.monotonic() - started) * 1000
+        return validated
 
     def _validate_action(self, action: Any) -> np.ndarray:
         array = np.asarray(action, dtype=np.float64)
@@ -221,9 +252,11 @@ class XTrainerRealEnvironment:
             limited[idx] = np.clip(current_state[idx] + delta, gripper_min, gripper_max)
         return limited.astype(np.float32)
 
-    def _write_gripper_if_needed(self, gripper: Any, target: float, current: float) -> None:
+    def _write_gripper_if_needed(self, gripper: Any, target: float, current: float) -> bool:
         if abs(float(target) - float(current)) >= self.safety.gripper_update_threshold:
             gripper.write(float(target))
+            return True
+        return False
 
     def _sleep_control_period(self) -> None:
         if self.control_hz > 0:

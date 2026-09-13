@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,11 +139,13 @@ def _merge_action_queue(
     result: InferenceResult,
     *,
     current_timestep: int,
+    chunk_smoothing_strength: float = 0.0,
 ) -> dict[int, TimedAction]:
     """按时间对齐最新轨迹；关节衔接只在下发前处理，夹爪不混合。"""
 
     merged: dict[int, TimedAction] = {}
-    for index, new_action in enumerate(result.actions):
+    smoothed = _smooth_action_chunk(result.actions, chunk_smoothing_strength)
+    for index, new_action in enumerate(smoothed):
         timestep = result.observation_timestep + index
         if timestep < current_timestep:
             continue
@@ -151,9 +154,24 @@ def _merge_action_queue(
             action=action,
             observation_timestep=result.observation_timestep,
             timestep=timestep,
-            raw_action=np.asarray(new_action, dtype=np.float64).copy(),
+            raw_action=np.asarray(result.actions[index], dtype=np.float64).copy(),
         )
     return merged
+
+
+def _smooth_action_chunk(actions: np.ndarray, strength: float = 0.5) -> np.ndarray:
+    """仅平滑块内关节；保留首尾和夹爪，不修改原始模型输出。"""
+    if not np.isfinite(strength) or not 0 <= strength <= 1:
+        raise ValueError("chunk_smoothing_strength must be finite and in [0, 1]")
+    source = np.asarray(actions, dtype=np.float64)
+    result = source.copy()
+    if len(source) >= 3 and strength > 0:
+        joints = np.r_[0:6, 7:13]
+        result[1:-1, joints] = (
+            (1 - strength / 2) * source[1:-1, joints]
+            + strength / 4 * (source[:-2, joints] + source[2:, joints])
+        )
+    return result
 
 
 def _rate_limit_action(
@@ -289,6 +307,7 @@ async def run_control_loop(
     request_timeout_s: float,
     max_delta_per_step: float,
     chunk_blend_steps: int = 6,
+    chunk_smoothing_strength: float = 0.5,
     control_log: ControlActionLog | None = None,
     monotonic_fn: Any = time.monotonic,
     sleep_fn: Any = asyncio.sleep,
@@ -301,7 +320,9 @@ async def run_control_loop(
         request_timeout_s=request_timeout_s,
         control_log=control_log,
     )
-    action_queue = _merge_action_queue({}, initial_result, current_timestep=0)
+    action_queue = _merge_action_queue(
+        {}, initial_result, current_timestep=0, chunk_smoothing_strength=chunk_smoothing_strength
+    )
     _LOGGER.info(
         "Initial inference returned %d actions; client action horizon is %d",
         len(initial_result.actions),
@@ -320,7 +341,10 @@ async def run_control_loop(
             if pending_request is not None and pending_request.done():
                 completed_request, pending_request = pending_request, None
                 result = completed_request.result()
-                action_queue = _merge_action_queue(action_queue, result, current_timestep=step)
+                action_queue = _merge_action_queue(
+                    action_queue, result, current_timestep=step,
+                    chunk_smoothing_strength=chunk_smoothing_strength,
+                )
                 _LOGGER.info(
                     "Received prefetched chunk of %d actions at control step %d (queue=%d)",
                     len(result.actions),
@@ -466,7 +490,76 @@ def _result_trace_fields(event: dict[str, Any], result: InferenceResult | None) 
     }
 
 
+def _capture_policy_observation(environment: Any, monotonic_fn: Any) -> dict[str, Any]:
+    """在采集线程内计时，后台读取不得覆盖主循环的已下发状态。"""
+    started_utc = datetime.now(timezone.utc).isoformat()
+    started = monotonic_fn()
+    reader = getattr(environment, "get_observation_snapshot", environment.get_observation)
+    observation = reader()
+    preprocess_started = monotonic_fn()
+    payload = _policy_payload(observation)
+    timing = dict(observation.get("observation.timing_ms", {}))
+    timing["payload_preprocess_ms"] = (monotonic_fn() - preprocess_started) * 1000
+    return {
+        "payload": payload,
+        "capture_started_at_utc": started_utc,
+        "observation_ready_at_utc": datetime.now(timezone.utc).isoformat(),
+        "observation_capture_ms": (monotonic_fn() - started) * 1000,
+        "observation_timing_ms": timing,
+    }
+
+
+class _ObservationWorker:
+    """最多一份采集中观测；不积压任务，退出前回收线程再关闭硬件。"""
+
+    def __init__(self, enabled: bool) -> None:
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="xtrainer-observation") if enabled else None
+        self.pending: Future | None = None
+        self.context: dict[str, Any] = {}
+
+    def start(self, environment: Any, monotonic_fn: Any, **context: Any) -> None:
+        if self.pending is not None:
+            raise RuntimeError("Observation capture is already in progress")
+        self.context = context
+        if self.executor is None:
+            self.pending = Future()
+            try:
+                self.pending.set_result(_capture_policy_observation(environment, monotonic_fn))
+            except Exception as error:
+                self.pending.set_exception(error)
+        else:
+            self.pending = self.executor.submit(_capture_policy_observation, environment, monotonic_fn)
+
+    def poll(self) -> dict[str, Any] | None:
+        if self.pending is None or not self.pending.done():
+            return None
+        pending, self.pending = self.pending, None
+        return {**self.context, **pending.result()}
+
+    def close(self) -> None:
+        if self.executor is not None:
+            self.executor.shutdown(wait=True, cancel_futures=True)
+
+
 async def run_async_control_loop(
+    policy: Any, environment: Any, *, background_observation: bool = True, **kwargs: Any
+) -> None:
+    worker = _ObservationWorker(background_observation)
+    try:
+        await _run_async_control_loop(policy, environment, capture_worker=worker, **kwargs)
+    finally:
+        # 不取消运行中的硬件事务，避免外层 close() 与后台串口/相机读取竞态。
+        cleanup = asyncio.create_task(asyncio.to_thread(worker.close))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
+    if worker.pending is not None and not worker.pending.cancelled():
+        worker.pending.result()
+
+
+async def _run_async_control_loop(
     policy: Any,
     environment: Any,
     *,
@@ -478,17 +571,16 @@ async def run_async_control_loop(
     request_timeout_s: float,
     max_delta_per_step: float,
     chunk_blend_steps: int = 6,
+    chunk_smoothing_strength: float = 0.5,
+    capture_worker: _ObservationWorker,
     control_log: ControlActionLog | None = None,
     monotonic_fn: Any = time.monotonic,
     sleep_fn: Any = asyncio.sleep,
 ) -> None:
     """Run the control loop while continuously replacing the pending observation."""
 
-    capture_started_at_utc = datetime.now(timezone.utc).isoformat()
-    capture_started_at = monotonic_fn()
-    initial_payload = _policy_payload(environment.get_observation())
-    observation_ready_at_utc = datetime.now(timezone.utc).isoformat()
-    capture_ms = (monotonic_fn() - capture_started_at) * 1000.0
+    initial_capture = _capture_policy_observation(environment, monotonic_fn)
+    initial_payload = initial_capture.pop("payload")
     initial_observation_id = policy.submit_observation(
         initial_payload,
         observation_timestep=0,
@@ -501,11 +593,9 @@ async def run_async_control_loop(
             observation_timestep=0,
             must_go=True,
             remaining_actions=0,
-            observation_capture_ms=capture_ms,
+            **initial_capture,
             state=np.asarray(initial_payload["state"], dtype=np.float64).tolist(),
             task=str(initial_payload["task"]),
-            capture_started_at_utc=capture_started_at_utc,
-            observation_ready_at_utc=observation_ready_at_utc,
             last_applied_action=None,
         )
     while True:
@@ -523,7 +613,9 @@ async def run_async_control_loop(
             )
         if initial_result is not None:
             break
-    action_queue = _merge_action_queue({}, initial_result, current_timestep=0)
+    action_queue = _merge_action_queue(
+        {}, initial_result, current_timestep=0, chunk_smoothing_strength=chunk_smoothing_strength
+    )
     if not action_queue:
         raise RuntimeError("Initial async action chunk is already stale")
 
@@ -554,7 +646,8 @@ async def run_async_control_loop(
                 }
                 overlap_action_count = len(incoming_timesteps.intersection(action_queue))
             merged = None if result is None else _merge_action_queue(
-                action_queue, result, current_timestep=step
+                action_queue, result, current_timestep=step,
+                chunk_smoothing_strength=chunk_smoothing_strength,
             )
             if control_log is not None:
                 control_log.write(
@@ -621,7 +714,9 @@ async def run_async_control_loop(
         rate_limited_action = _rate_limit_action(
             blended_action, last_sent_action, max_delta_per_step
         )
+        apply_started = monotonic_fn()
         applied_action = environment.apply_action(rate_limited_action, pace=False)
+        apply_ms = (monotonic_fn() - apply_started) * 1000
         last_sent_action = np.asarray(applied_action, dtype=np.float64).copy()
         if control_log is not None:
             control_log.write(
@@ -638,11 +733,14 @@ async def run_async_control_loop(
                     else timed_action.raw_action.tolist()
                 ),
                 queued_action=queued_action.tolist(),
+                smoothed_action=queued_action.tolist(),
                 blended_action=blended_action.tolist(),
                 source_changed=source_changed,
                 blend_step=active_blend_step,
                 rate_limited_action=rate_limited_action.tolist(),
                 applied_action=last_sent_action.tolist(),
+                apply_action_ms=apply_ms,
+                action_timing_ms=getattr(environment, "last_action_timing_ms", {}),
             )
 
         in_prefetch_window = _should_prefetch(
@@ -654,33 +752,41 @@ async def run_async_control_loop(
         should_submit = entered_fallback or (
             (used_fallback or in_prefetch_window) and now >= next_observation_at
         )
-        if should_submit:
-            observation_timestep = step + 1
-            capture_started_at_utc = datetime.now(timezone.utc).isoformat()
-            capture_started_at = monotonic_fn()
-            payload = _policy_payload(environment.get_observation())
-            observation_ready_at_utc = datetime.now(timezone.utc).isoformat()
-            capture_ms = (monotonic_fn() - capture_started_at) * 1000.0
-            observation_id = policy.submit_observation(
-                payload,
-                observation_timestep=observation_timestep,
+        if should_submit and capture_worker.pending is None:
+            capture_worker.start(
+                environment, monotonic_fn,
+                observation_timestep=step + 1,
                 must_go=entered_fallback,
+                remaining_actions=len(action_queue),
+                last_applied_action=last_sent_action.tolist(),
             )
             next_observation_at = monotonic_fn() + observation_period
-            if control_log is not None:
-                control_log.write(
-                    "async_observation_queued",
-                    observation_id=observation_id,
-                    observation_timestep=observation_timestep,
-                    must_go=entered_fallback,
-                    remaining_actions=len(action_queue),
-                    observation_capture_ms=capture_ms,
-                    state=np.asarray(payload["state"], dtype=np.float64).tolist(),
-                    task=str(payload["task"]),
-                    capture_started_at_utc=capture_started_at_utc,
-                    observation_ready_at_utc=observation_ready_at_utc,
-                    last_applied_action=last_sent_action.tolist(),
+        capture = capture_worker.poll()
+        if capture is not None:
+            payload = capture.pop("payload")
+            # 时间戳属于采集起点，不能把较慢的旧观测伪装成完成时刻的新观测。
+            age_steps = step + 1 - capture["observation_timestep"]
+            if age_steps >= action_horizon:
+                if control_log is not None:
+                    control_log.write("async_observation_discarded", reason="capture_stale", **capture)
+                next_observation_at = monotonic_fn()
+            else:
+                # 采集中途进入保持时，也要确保补给不被服务端相似观测过滤掉。
+                capture["must_go"] = capture["must_go"] or used_fallback
+                observation_id = policy.submit_observation(
+                    payload, observation_timestep=capture["observation_timestep"], must_go=capture["must_go"]
                 )
+                next_observation_at = monotonic_fn() + observation_period
+                if control_log is not None:
+                    control_log.write(
+                        "async_observation_queued",
+                        observation_id=observation_id,
+                        submission_control_timestep=step + 1,
+                        capture_age_steps=age_steps,
+                        **capture,
+                        state=np.asarray(payload["state"], dtype=np.float64).tolist(),
+                        task=str(payload["task"]),
+                    )
 
         was_fallback = used_fallback
 
@@ -832,6 +938,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Maximum latest-observation submission rate; control actions keep their own rate",
     )
     parser.add_argument(
+        "--chunk-smoothing-strength",
+        type=float,
+        default=0.5,
+        help="Three-point joint smoothing strength in [0, 1]; 0 disables it (endpoints and grippers unchanged)",
+    )
+    parser.add_argument(
+        "--background-observation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Capture latest-mode observations in one background worker; --no-background-observation rolls back",
+    )
+    parser.add_argument(
         "--chunk-blend-steps",
         type=int,
         default=6,
@@ -895,6 +1013,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError(f"Expected positive values for: {', '.join(invalid)}")
     if not 0 <= args.prefetch_threshold <= 1:
         raise ValueError("prefetch_threshold must be in [0, 1]")
+    if not np.isfinite(args.chunk_smoothing_strength) or not 0 <= args.chunk_smoothing_strength <= 1:
+        raise ValueError("chunk_smoothing_strength must be finite and in [0, 1]")
     epsilon = args.observation_similarity_epsilon
     if epsilon is not None and (not np.isfinite(epsilon) or epsilon < 0):
         raise ValueError("observation_similarity_epsilon must be finite and non-negative")
@@ -955,6 +1075,7 @@ async def run(
             "request_timeout_s": args.request_timeout,
             "max_delta_per_step": args.max_delta_per_step,
             "chunk_blend_steps": args.chunk_blend_steps,
+            "chunk_smoothing_strength": args.chunk_smoothing_strength,
             "control_log": control_log,
         }
         if args.async_observation_mode == "latest":
@@ -962,6 +1083,7 @@ async def run(
                 policy,
                 active_environment,
                 observation_hz=args.observation_hz,
+                background_observation=args.background_observation,
                 **loop_kwargs,
             )
         else:

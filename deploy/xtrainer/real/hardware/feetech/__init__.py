@@ -44,6 +44,10 @@ class XTrainerFeetechGripper:
         self.model_number: int | None = None
 
     @property
+    def last_write_lock_wait_ms(self) -> float:
+        return float(getattr(self._bus, "last_write_lock_wait_ms", 0.0))
+
+    @property
     def is_connected(self) -> bool:
         return self._bus is not None and bool(getattr(self._bus, "is_connected", True))
 

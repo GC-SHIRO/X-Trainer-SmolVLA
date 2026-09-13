@@ -350,3 +350,48 @@ def test_apply_action_can_defer_pacing_to_external_control_loop():
     env.apply_action(env._last_state, pace=False)
 
     assert sleeps == []
+
+
+def test_read_only_snapshot_does_not_overwrite_command_state_and_records_timings():
+    env = make_env()
+    env.reset()
+    command = np.zeros(14, dtype=np.float32)
+    env.apply_action(command, pace=False)
+    env.left_arm.joints = np.ones(6, dtype=np.float32)
+    obs = env.get_observation_snapshot()
+    np.testing.assert_array_equal(obs[STATE_KEY][:6], 1)
+    np.testing.assert_array_equal(env._last_state, command)
+    expected = {
+        "left_arm_read_ms", "right_arm_read_ms", "left_gripper_read_ms", "right_gripper_read_ms",
+        "top_camera_ms", "left_wrist_camera_ms", "right_wrist_camera_ms", "image_validation_ms",
+    }
+    assert expected <= obs["observation.timing_ms"].keys()
+    assert all(value >= 0 for value in obs["observation.timing_ms"].values())
+    assert env.last_action_timing_ms["left_gripper_lock_wait_ms"] == 0
+
+
+def test_slow_snapshot_cannot_race_with_newer_action_state():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    env = make_env()
+    env.reset()
+    started, release = Event(), Event()
+    original_read = env.cameras["top"].read_rgb
+
+    def slow_camera():
+        started.set()
+        assert release.wait(2)
+        return original_read()
+
+    env.cameras["top"].read_rgb = slow_camera
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(env.get_observation_snapshot)
+        try:
+            assert started.wait(2)
+            command = np.full(14, 0.5)
+            env.apply_action(command, pace=False)
+        finally:
+            release.set()
+        future.result(timeout=2)
+    np.testing.assert_array_equal(env._last_state, command)

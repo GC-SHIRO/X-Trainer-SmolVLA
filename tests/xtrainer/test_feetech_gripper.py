@@ -134,3 +134,39 @@ def test_gripper_rejects_non_finite_commands():
 
     with pytest.raises(ValueError, match="finite"):
         gripper.write(float("nan"))
+
+
+def test_read_write_transactions_do_not_interleave():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    reading, release, writing = Event(), Event(), Event()
+
+    class SlowSerial(FakeSerial):
+        def read(self, size=1):
+            if len(self.writes) == 1:
+                reading.set()
+                assert release.wait(2)
+            return super().read(size)
+
+    serial = SlowSerial([_status_packet(21, b"\x00\x08"), _status_packet(21)])
+    bus = SmsStsGripperBus(port="fake", motor_id=21)
+    bus._serial = serial
+
+    def write():
+        writing.set()
+        bus.write_position(2550)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reader = pool.submit(bus.read_position)
+        try:
+            assert reading.wait(2)
+            writer = pool.submit(write)
+            assert writing.wait(2)
+            assert len(serial.writes) == 1
+        finally:
+            release.set()
+        assert reader.result(timeout=2) == 2048
+        writer.result(timeout=2)
+    assert len(serial.writes) == 2
+    assert bus.last_write_lock_wait_ms >= 0

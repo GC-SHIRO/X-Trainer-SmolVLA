@@ -10,6 +10,7 @@ model 10760, not LeRobot's ``sts3215`` model 777.
 from __future__ import annotations
 
 import time
+from threading import Lock
 from typing import Any, Callable, Protocol
 
 
@@ -61,6 +62,8 @@ class SmsStsGripperBus:
         self._monotonic = monotonic_fn
         self._serial: SerialLike | None = None
         self.model_number: int | None = None
+        self._transaction_lock = Lock()
+        self.last_write_lock_wait_ms = 0.0
 
     @property
     def is_connected(self) -> bool:
@@ -125,6 +128,14 @@ class SmsStsGripperBus:
         return self._request(_READ, bytes([address, length]), response_length=length)
 
     def _request(self, instruction: int, parameters: bytes = b"", *, response_length: int = 0) -> bytes:
+        # 一个串口同一时刻只能有一笔完整事务，不能让后台读取抢走写入的回包。
+        started = time.monotonic()
+        with self._transaction_lock:
+            if instruction == _WRITE:
+                self.last_write_lock_wait_ms = (time.monotonic() - started) * 1000
+            return self._request_locked(instruction, parameters, response_length=response_length)
+
+    def _request_locked(self, instruction: int, parameters: bytes, *, response_length: int) -> bytes:
         serial_port = self._require_serial()
         length = len(parameters) + 2
         packet_without_checksum = bytes([self.motor_id, length, instruction]) + parameters

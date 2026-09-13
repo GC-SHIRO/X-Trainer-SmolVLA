@@ -388,6 +388,8 @@ python scripts/xtrainer/run_real.py \
 | `--max-gripper-delta`  | 默认关闭   | 可选的单步夹爪变化限幅；默认无穷大。                                                           |
 | `--max-delta-per-step` | 默认关闭   | 可选的最终逐维限幅；默认`0`，不改写策略动作。                                                |
 | `--chunk-blend-steps`  | 默认`6`   | 换块时计算关节衔接偏差，将其加到新轨迹并用 6 步衰减到零；夹爪直接采用最新目标，`0` 可关闭。 |
+| `--chunk-smoothing-strength` | 默认`0.5` | 块内关节三点平滑，范围 `[0,1]`，`0` 关闭；保留首尾和夹爪。 |
+| `--background-observation` | 默认开启 | `latest` 模式单线程后台采集；`--no-background-observation` 回退同步采集。 |
 | `--ramp-step`          | 默认`0.01` | 自动 reset 时用于计算插值步数的期望变化量，单位为弧度。                                        |
 | `--ramp-max-steps`     | 默认`100`  | 自动 reset 的最多插值步数；距离较大时仍会在最后一步完整到达目标。                              |
 | `--async-observation-mode` | 默认`latest` | 推理期间持续提交观测，服务端只保留尚未推理的最新一条；`legacy` 可回退到原单请求模式。        |
@@ -412,6 +414,18 @@ python scripts/xtrainer/run_real.py \
 旧的 `0.3/0.7` 队列混合已移除。衔接偏差固定为“上一条下发目标 − 新块首个可用目标”，随后输出
 “新轨迹当前目标 + 衰减偏差”，首步保留约 92.6% 偏差，第 6 步归零；中途换块从当前下发目标重新计算。
 这保留了新轨迹本身的运动，不再反复从固定位置缩放整条轨迹；高频换块下仍需检查跟踪滞后。
+
+块内平滑在丢弃过期前缀之前执行，默认关节权重为前一步 `0.125`、当前步 `0.75`、后一步 `0.125`。
+只修改客户端保留块的内部关节目标，首尾和夹爪原样保留；之后沿用六步换块衔接。
+线性变化保持不变，不额外等待未来观测，但局部峰值会减小，应结合抓取效果调整强度。
+
+后台采集最多一份任务，采集期间动作继续下发。观测使用采集请求时的控制步作为时间起点；
+若提交时已经过期则丢弃并重新采集。退出时等待运行中的采集结束，再关闭硬件。
+机械臂反馈与运动使用不同连接；夹爪串口以完整事务加锁，仍可能存在硬件读写等待。
+新增 `observation_timing_ms` 分解设备读取、相机和预处理耗时；`control_step` 的
+`apply_action_ms`、`action_timing_ms` 分解动作下发和夹爪锁等待，`smoothed_action` 等于平滑后的队列目标。
+`submission_control_timestep`、`capture_age_steps` 标识提交时刻及采集经过的控制步。
+`last_applied_action` 属于采集启动时刻，设备反馈依次读取，并非同步联合采样。
 
 观测提交日志还记录复用现有硬件读取的 14 维 `state`、`last_applied_action`、`capture_started_at_utc`
 和 `observation_ready_at_utc`。返回事件（含首次推理）记录完整 `returned_actions`、

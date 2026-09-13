@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from threading import Event, Timer
 
 import numpy as np
 import pytest
@@ -13,6 +14,133 @@ from deploy.xtrainer.real.environment import (
     TOP_IMAGE_KEY,
 )
 from scripts.xtrainer.run_real import ControlActionLog, run_async_control_loop
+
+
+def test_background_capture_keeps_control_running_and_retains_capture_timestep(tmp_path):
+    started, release, finished = Event(), Event(), Event()
+
+    class SlowEnvironment(Environment):
+        calls = 0
+
+        def get_observation(self):
+            self.calls += 1
+            if self.calls > 1:
+                started.set()
+                assert release.wait(2), "control loop did not advance during capture"
+                finished.set()
+            return super().get_observation()
+
+        def apply_action(self, action, **kwargs):
+            if len(self.actions) == 3:
+                assert started.is_set() and not finished.is_set()
+                release.set()
+            return super().apply_action(action, **kwargs)
+
+    class LongPolicy(AsyncPolicy):
+        def submit_observation(self, payload, **kwargs):
+            result = super().submit_observation(payload, **kwargs)
+            self.events._queue[-1]["payload"]["action"] = np.ones((50, 14))
+            return result
+
+    env = SlowEnvironment()
+    path = tmp_path / "background.jsonl"
+
+    async def tick(_seconds):
+        if len(env.actions) == 1:
+            assert await asyncio.to_thread(started.wait, 2)
+        if len(env.actions) == 4:
+            assert await asyncio.to_thread(finished.wait, 2)
+        await asyncio.sleep(0.001)
+
+    async def exercise():
+        log = ControlActionLog(path)
+        try:
+            await run_async_control_loop(
+                LongPolicy(), env, action_horizon=50, control_hz=30, max_steps=8,
+                prefetch_threshold=1, observation_hz=0.1, request_timeout_s=1,
+                max_delta_per_step=0, sleep_fn=tick, control_log=log,
+            )
+        finally:
+            release.set()
+            log.close()
+
+    asyncio.run(exercise())
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    queued = [r for r in records if r["event"] == "async_observation_queued"]
+    assert env.calls == 2
+    assert len(env.actions) == 8
+    assert len(queued) == 2
+    assert queued[1]["observation_timestep"] == 1
+    assert queued[1]["submission_control_timestep"] >= 4
+    assert queued[1]["capture_age_steps"] >= 3
+    assert queued[1]["last_applied_action"] == [1.0] * 14
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_background_capture_is_joined_on_exit_or_cancellation(cancel):
+    started, release, finished = Event(), Event(), Event()
+
+    class SlowEnvironment(Environment):
+        calls = 0
+
+        def get_observation(self):
+            self.calls += 1
+            if self.calls > 1:
+                started.set()
+                assert release.wait(2)
+                finished.set()
+            return super().get_observation()
+
+    async def exercise():
+        async def tick(_seconds):
+            assert await asyncio.to_thread(started.wait, 2)
+            if cancel:
+                raise asyncio.CancelledError()
+
+        timer = Timer(0.1, release.set)
+        timer.start()
+        try:
+            task = run_async_control_loop(
+                AsyncPolicy(), SlowEnvironment(), action_horizon=3, control_hz=30,
+                max_steps=1, prefetch_threshold=1, observation_hz=30,
+                request_timeout_s=1, max_delta_per_step=0, sleep_fn=tick,
+            )
+            if cancel:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                await task
+            assert finished.is_set()
+        finally:
+            release.set()
+            timer.join()
+
+    asyncio.run(exercise())
+
+
+def test_background_capture_failure_is_propagated():
+    finished = Event()
+
+    class BrokenEnvironment(Environment):
+        calls = 0
+
+        def get_observation(self):
+            self.calls += 1
+            if self.calls > 1:
+                finished.set()
+                raise RuntimeError("observation read failed")
+            return super().get_observation()
+
+    async def tick(_seconds):
+        assert await asyncio.to_thread(finished.wait, 2)
+        await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="observation read failed"):
+        asyncio.run(run_async_control_loop(
+            AsyncPolicy(), BrokenEnvironment(), action_horizon=3, control_hz=30,
+            max_steps=4, prefetch_threshold=1, observation_hz=30,
+            request_timeout_s=1, max_delta_per_step=0, sleep_fn=tick,
+        ))
 
 
 class AsyncPolicy:
@@ -119,6 +247,7 @@ def test_async_control_loop_smooths_source_change_and_logs_diagnostics(tmp_path)
                 request_timeout_s=1,
                 max_delta_per_step=0,
                 chunk_blend_steps=6,
+                background_observation=False,
                 control_log=control_log,
                 monotonic_fn=lambda: 0.0,
                 sleep_fn=asyncio.sleep,
@@ -205,6 +334,7 @@ def test_async_control_loop_yields_transport_after_observation_overrun():
             request_timeout_s=1,
             max_delta_per_step=0,
             chunk_blend_steps=0,
+            background_observation=False,
         )
     )
 

@@ -25,6 +25,7 @@ from scripts.xtrainer.run_real import (
     _policy_payload,
     _rate_limit_action,
     _should_prefetch,
+    _smooth_action_chunk,
     _validate_args,
     parse_args,
     run,
@@ -472,5 +473,48 @@ def test_run_passes_observation_rate_only_to_latest_loop(monkeypatch):
 
     assert captured["observation_hz"] == pytest.approx(12.0)
     assert captured["chunk_blend_steps"] == 6
+    assert captured["chunk_smoothing_strength"] == 0.5
+    assert captured["background_observation"] is True
     assert environment.closed
     assert policy.closed
+
+
+def test_chunk_smoothing_preserves_linear_motion_endpoints_grippers_and_input():
+    actions = np.arange(7)[:, None] * np.arange(14)[None, :] / 100
+    actions[:, [6, 13]] = np.arange(7)[:, None] % 2
+    original = actions.copy()
+    np.testing.assert_allclose(_smooth_action_chunk(actions), actions)
+    actions[3, 12] += 1
+    smoothed = _smooth_action_chunk(actions)
+    assert smoothed[3, 12] == pytest.approx(original[3, 12] + 0.75)
+    assert smoothed[2, 12] == pytest.approx(original[2, 12] + 0.125)
+    np.testing.assert_array_equal(smoothed[[0, -1]], actions[[0, -1]])
+    np.testing.assert_array_equal(smoothed[:, [6, 13]], actions[:, [6, 13]])
+    assert actions[3, 12] == pytest.approx(original[3, 12] + 1)
+    np.testing.assert_array_equal(_smooth_action_chunk(actions, 0), actions)
+    for length in (1, 2):
+        np.testing.assert_array_equal(_smooth_action_chunk(actions[:length]), actions[:length])
+
+
+def test_smoothing_precedes_expired_prefix_drop_and_keeps_raw_action():
+    actions = np.zeros((5, 14))
+    actions[1, 12] = 8
+    result = InferenceResult(actions, observation_timestep=10)
+    merged = _merge_action_queue({}, result, current_timestep=12, chunk_smoothing_strength=0.5)
+    assert merged[12].action[12] == 1
+    assert merged[12].raw_action[12] == 0
+    np.testing.assert_array_equal(result.actions, actions)
+
+
+@pytest.mark.parametrize("value", ["-0.1", "1.1", "nan", "inf"])
+def test_chunk_smoothing_rejects_invalid_cli_strength(value):
+    args = parse_args(["--host", "localhost", "--chunk-smoothing-strength", value])
+    with pytest.raises(ValueError, match="chunk_smoothing_strength"):
+        _validate_args(args)
+
+
+def test_smoothing_and_capture_rollback_cli():
+    args = parse_args(["--host", "localhost", "--chunk-smoothing-strength", "0", "--no-background-observation"])
+    _validate_args(args)
+    assert args.chunk_smoothing_strength == 0
+    assert args.background_observation is False

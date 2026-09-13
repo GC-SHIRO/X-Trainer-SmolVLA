@@ -365,11 +365,25 @@ python scripts/xtrainer/run_real.py \
 `--max-gripper-delta` 默认无穷大，`--max-delta-per-step` 默认 `0`，均不改写策略动作；夹爪 `[0,1]`
 合法范围和 NaN/Inf 检查仍然保留。
 
+块内默认启用 `--chunk-smoothing-strength 0.5`：12 个关节使用三点权重
+`0.125 / 0.75 / 0.125`，保留块首尾与夹爪。先处理客户端保留的动作块，再丢弃过期前缀和执行换块衔接；
+原始模型动作仍保存在日志中。相邻预测目标已经在块内，因此无需额外等待一步；局部极值可能减小，
+真机抓取效果仍需验证。传入 `--chunk-smoothing-strength 0` 可单独关闭块内平滑。
+
+`latest` 模式默认使用单个后台线程采集观测，采集中控制循环继续下发，最多一份采集任务，不积压。
+时间索引保留采集请求时的控制步；已经超出动作 horizon 的观测直接丢弃。退出先回收采集线程再关闭硬件。
+`--no-background-observation` 可回退同步采集，`legacy` 始终同步采集。
+夹爪读写共用串口，完整事务仍串行并检查回包；慢夹爪读事务可能阻塞写入，后台采集不保证消除所有硬件等待。
+
 使用 `--log-control` 时，观测提交记录包含读取到的 14 维实测 `state`、`last_applied_action`、采集起止时间
 和 `observation_capture_ms`，复用现有读取，不额外查询硬件。返回事件（包括首次推理）记录完整
 `returned_actions`、返回/保留数量和客户端收包解码后的 `client_received_at_utc`；事件自身
 `timestamp_utc` 是控制循环处理日志的时间。每步保留 `raw_action`、`queued_action`、`blended_action`、
 `source_changed`、`blend_step` 以及 `action_index`（完整返回块中从 0 开始的索引，fallback 为 null）。
+`latest` 模式另记录 `smoothed_action`（等于平滑后的 `queued_action`）、`apply_action_ms`、
+`action_timing_ms`（分设备写入和夹爪锁等待）、`observation_timing_ms`（分设备读取、相机和图像预处理）。
+后台观测的 `submission_control_timestep` 和 `capture_age_steps` 区分采集起点与提交时刻；
+`last_applied_action` 是启动该次采集时的下发目标，`state` 各设备依次读取，并非同一时刻的联合采样。
 `applied_action` 是下发目标，不能当成实测位置；关节状态也不是末端 Z 高度。确认 reset pose、左右臂
 映射和夹爪方向后再增加运行步数，全程保持急停可触达。
 
