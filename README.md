@@ -259,9 +259,9 @@ find /data/xtrainer/collect_data/<episode_id>/rightImg -name "*.jpg" | wc -l
 
 ```bash
 python scripts/xtrainer/convert_raw_to_lerobot_2_1.py \
-  --raw-root /data/xtrainer/collect_data \
-  --output-root /data/xtrainer/dataset_v21 \
-  --task "将桌面上的方块放入收纳盒" \
+  --raw-root 数据集对应collect_data的目录 \
+  --output-root 输出的数据集的文件夹\
+  --task "对应任务的提示词" \
   --fps 30 \
   --use-videos \
   --overwrite-output
@@ -304,6 +304,8 @@ python tools/transform_xtrainer_dataset_images.py \
 ```
 
 输出目录已经存在时，只有显式传入 `--overwrite-output` 才会替换它。
+
+注意：训练数据需要手动检查内容，确保左右手的翻转情况一致，有利于模型进行学习
 
 ### 7.4 如何理解转换
 
@@ -416,7 +418,7 @@ bash scripts/xtrainer/train_smolvla.sh \
   --dataset-root /data/xtrainer/dataset_v21_camera_aligned \
   --device cuda \
   --batch-size 8 \
-  --steps 100000 \
+  --steps 80000 \
   --output-dir outputs/train/xtrainer_smolvla_full
 ```
 
